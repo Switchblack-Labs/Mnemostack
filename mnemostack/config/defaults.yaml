@@ -1,0 +1,26 @@
+compression:
+  consolidation_interval: 25
+  memory_token_budget: 3000
+  consolidation_model: "ollama/llama3:8b"
+  local_extraction_mode: "all"
+
+retrieval:
+  embedding_model: "ollama/nomic-embed-text"
+  top_k: 5
+  faiss_m: 32
+  faiss_ef_construction: 200
+  faiss_ef_search: 128
+  ranking_weights:
+    semantic: 0.6
+    recency: 0.25
+    dependency: 0.15
+  recency_half_life_minutes: 60
+  dependency_hops: 2
+  file_watch_debounce_ms: 500
+
+store:
+  base_dir: "store"
+  snapshots_dir: "store/snapshots"
+
+server:
+  transport: "stdio"

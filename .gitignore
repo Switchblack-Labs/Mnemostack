@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Store artifacts (generated at runtime)
+store/index.faiss
+store/chunks.db
+store/graph.db
+store/relevance.db
+store/snapshots/*.json
+
+# IDE
+.vscode/
+.idea/
