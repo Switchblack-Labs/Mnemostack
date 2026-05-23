@@ -20,7 +20,6 @@ retrieval:
 
 store:
   base_dir: "store"
-  snapshots_dir: "store/snapshots"
 
 server:
   transport: "stdio"

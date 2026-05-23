@@ -1,54 +1,79 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mnemostack.mcp.server import mcp
+
+# extra="forbid" on all wire models so a server-side typo (e.g. emitting a misspelled
+# field) raises in tests instead of silently dropping data on the way to the client.
+_WIRE_MODEL_CONFIG = ConfigDict(extra="forbid")
+
 
 # --- Response models ---
 
 
 class CodeChunk(BaseModel):
-    file_path: str
+    model_config = _WIRE_MODEL_CONFIG
+
+    file_path: str = Field(min_length=1)
     symbol_name: str
     code: str
-    line_start: int
-    line_end: int
-    score: float
+    line_start: int = Field(ge=1)
+    line_end: int = Field(ge=1)
+    score: float = Field(ge=0.0)
     dependencies: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_line_range(self) -> CodeChunk:
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
 
 
 class SessionMemory(BaseModel):
+    model_config = _WIRE_MODEL_CONFIG
+
     decisions: list[dict] = Field(default_factory=list)
     constraints: list[dict] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     architecture_state: dict = Field(default_factory=dict)
     resolved: list[str] = Field(default_factory=list)
-    local_extractions_pending: int = 0
+    local_extractions_pending: int = Field(default=0, ge=0)
     last_consolidation_turn: int | None = None
 
 
 class CombinedContext(BaseModel):
+    model_config = _WIRE_MODEL_CONFIG
+
     session: SessionMemory
     chunks: list[CodeChunk]
 
 
 class ConsolidationResult(BaseModel):
+    model_config = _WIRE_MODEL_CONFIG
+
     success: bool
-    turns_consolidated: int
+    turns_consolidated: int = Field(ge=0)
     snapshot_id: str
-    token_count: int
+    token_count: int = Field(ge=0)
 
 
 class MemoryStats(BaseModel):
-    snapshot_count: int
-    total_memory_tokens: int
-    index_chunk_count: int
-    graph_node_count: int
-    graph_edge_count: int
-    last_consolidation_turn: int | None
+    model_config = _WIRE_MODEL_CONFIG
+
+    snapshot_count: int = Field(ge=0)
+    total_memory_tokens: int = Field(ge=0)
+    index_chunk_count: int = Field(ge=0)
+    graph_node_count: int = Field(ge=0)
+    graph_edge_count: int = Field(ge=0)
+    last_consolidation_turn: int | None = None
 
 
 class Confirmation(BaseModel):
+    model_config = _WIRE_MODEL_CONFIG
+
     success: bool
     message: str
 
@@ -60,6 +85,10 @@ class Confirmation(BaseModel):
 async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
     """Search the codebase semantically. Returns top-k relevant code chunks
     using hybrid FTS5+FAISS retrieval with dependency expansion and recency ranking."""
+    if not query:
+        raise ValueError("query must not be empty")
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
     # TODO: wire to core/retrieval pipeline
     return []
 
@@ -76,6 +105,8 @@ async def get_session_context() -> SessionMemory:
 async def get_full_context(query: str) -> CombinedContext:
     """Get session memory and relevant code chunks in a single call.
     Convenience tool that combines get_session_context + query_codebase."""
+    if not query:
+        raise ValueError("query must not be empty")
     session = await get_session_context()
     chunks = await query_codebase(query)
     return CombinedContext(session=session, chunks=chunks)
@@ -113,6 +144,8 @@ async def get_memory_stats() -> MemoryStats:
 async def update_constraint(constraint: str) -> Confirmation:
     """Manually add a constraint to session memory. Bypasses automatic extraction
     so you can explicitly tell the system to remember something."""
+    if not constraint:
+        raise ValueError("constraint must not be empty")
     # TODO: wire to core/compression/memory_store
     return Confirmation(
         success=False,
