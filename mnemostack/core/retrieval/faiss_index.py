@@ -318,7 +318,8 @@ class FaissIndex:
 
     def close(self) -> None:
         """Close database connection and persist index."""
-        self.save()
+        if self._index is not None:
+            self.save()
         if self._db:
             self._db.close()
             self._db = None

@@ -130,15 +130,24 @@ class FTSIndex:
         self.db.commit()
 
     def sync_removed(self, file_path: str) -> None:
-        """Remove FTS entries for chunks that were deleted from the shared table.
+        """Remove FTS entries for chunks belonging to *file_path*.
 
-        Call BEFORE deleting from chunks table (need the data for FTS delete command).
+        Preferred ordering:  call **before** FaissIndex.remove_by_file() so the
+        chunk rows still exist and precise FTS delete commands can be issued.
+
+        If the chunks have already been deleted (wrong ordering), this method
+        falls back to a full FTS rebuild to guarantee consistency rather than
+        silently leaving ghost entries in the inverted index.
         """
         rows = self.db.execute(
             "SELECT id, symbol_name, qualified_name, code FROM chunks WHERE file_path = ?",
             (file_path,),
         ).fetchall()
+
         if not rows:
+            # Chunks already gone — cannot issue precise FTS delete commands.
+            # Fall back to a full rebuild so stale entries don't persist.
+            self.rebuild_all()
             return
 
         cursor = self.db.cursor()
@@ -151,19 +160,18 @@ class FTSIndex:
         self.db.commit()
 
     def _rebuild_fts_for_file(self, file_path: str) -> None:
-        """Rebuild FTS entries for all chunks of a file."""
-        rows = self.db.execute(
-            "SELECT id, symbol_name, qualified_name, code FROM chunks WHERE file_path = ?",
-            (file_path,),
-        ).fetchall()
-        cursor = self.db.cursor()
-        for row_id, symbol, qname, code in rows:
-            cursor.execute(
-                """INSERT OR REPLACE INTO chunks_fts(rowid, symbol_name, qualified_name, code)
-                   VALUES (?, ?, ?, ?)""",
-                (row_id, symbol, qname, code),
-            )
-        self.db.commit()
+        """Rebuild FTS entries for a file by rebuilding the entire FTS index.
+
+        FTS5 content-sync virtual tables do not support REPLACE — an INSERT with
+        an existing rowid silently adds a duplicate instead of updating.  Because
+        FTS entries carry no file_path column, there is no way to surgically
+        delete only one file's stale entries.  A full rebuild is the only correct
+        option (< 1 s for 10 k chunks on modern hardware).
+
+        For incremental updates, prefer the explicit sync_removed() →
+        remove_by_file() → add() → sync_added() workflow instead of sync_file().
+        """
+        self.rebuild_all()
 
     def rebuild_all(self) -> None:
         """Rebuild the entire FTS index from the chunks table."""
