@@ -75,8 +75,7 @@ class CallGraph:
     def add_node(self, qualified_name: str, node_type: NodeType, file_path: str) -> int:
         """Add a node (or get existing). Returns node ID.
 
-        Note: call commit() after batch operations for performance.
-        Individual add_node/add_edge calls auto-commit for safety.
+        Does NOT auto-commit. Caller must call commit() to persist changes.
         """
         cursor = self.db.execute(
             "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
@@ -89,6 +88,7 @@ class CallGraph:
             "INSERT INTO nodes (qualified_name, node_type, file_path) VALUES (?, ?, ?)",
             (qualified_name, node_type.value, file_path),
         )
+        assert cursor.lastrowid is not None  # guaranteed for AUTOINCREMENT tables
         return cursor.lastrowid
 
     def add_edge(self, source_qname: str, target_qname: str, edge_type: EdgeType) -> None:
@@ -291,12 +291,16 @@ def _py_node_name(node: Node, source: bytes) -> str:
 def _extract_python_import(
     node: Node, source: bytes, file_path: str, graph: CallGraph
 ) -> None:
-    """Extract IMPORTS_FROM edges from import statements."""
+    """Extract IMPORTS_FROM edges from import statements.
+
+    Note: creates phantom FILE nodes for imported modules using a guessed path
+    (dotted.module -> dotted/module.py). These may not correspond to real files
+    on disk — they exist solely to enable dependency traversal in the graph.
+    """
     if node.type == "import_from_statement":
         module_node = node.child_by_field_name("module_name")
         if module_node:
             module_name = source[module_node.start_byte:module_node.end_byte].decode()
-            # Convert dotted module to a pseudo file path for the edge
             module_path = module_name.replace(".", "/") + ".py"
             graph.add_node(module_path, NodeType.FILE, module_path)
             graph.add_edge(file_path, module_path, EdgeType.IMPORTS_FROM)

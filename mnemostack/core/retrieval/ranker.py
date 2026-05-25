@@ -154,6 +154,8 @@ def rerank(
 ) -> list[RankedResult]:
     """Apply recency weighting, dependency bonus, and query intent boost.
 
+    Mutates and re-sorts `results` in place. Returns the same list for chaining.
+
     Final score = a * rrf_score + b * recency + c * dependency_bonus
     where a, b, c are from settings.retrieval.ranking_weights.
     """
@@ -167,11 +169,9 @@ def rerank(
         r.recency_score = recency
         r.dependency_score = dep_bonus
 
-        # Normalize RRF score to [0,1] range for weighted combination
-        # Max possible single-list RRF score is 1/(k+1) ≈ 0.016
-        # With two lists, max is 2/(k+1) ≈ 0.033
-        # Scale up for meaningful weighting
-        normalized_rrf = r.final_score * (_RRF_K + 1)  # puts rank-1 at ~1.0
+        # Scale RRF score for meaningful weighting against recency/dependency [0,1]
+        # Rank-1 in one list → ~1.0, rank-1 in both lists → ~2.0
+        normalized_rrf = r.final_score * (_RRF_K + 1)
 
         r.semantic_score = normalized_rrf
         r.final_score = (

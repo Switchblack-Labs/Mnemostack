@@ -234,8 +234,9 @@ def _sanitize_fts_query(query: str) -> str:
 
     Wraps individual tokens in quotes to prevent FTS5 syntax errors from
     special characters like colons, dots, or parentheses in code identifiers.
+    Embedded double quotes are escaped by doubling them (FTS5 convention).
     """
     tokens = query.split()
     if not tokens:
         return query
-    return " ".join(f'"{t}"' for t in tokens)
+    return " ".join(f'"{t.replace(chr(34), chr(34)+chr(34))}"' for t in tokens)

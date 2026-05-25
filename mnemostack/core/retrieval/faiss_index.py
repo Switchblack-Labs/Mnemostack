@@ -27,6 +27,13 @@ from mnemostack.core.retrieval.ast_chunker import Chunk
 
 
 class SearchResult:
+    """A single FAISS search result.
+
+    Note: `score` is L2 distance (lower = more similar). Results are returned
+    in ascending distance order (most similar first). The ranker uses rank
+    position via RRF, not raw score values, so the L2 convention is safe.
+    """
+
     __slots__ = ("chunk_id", "score", "file_path", "symbol_name", "code",
                  "line_start", "line_end", "chunk_type", "qualified_name",
                  "last_modified", "dependencies")

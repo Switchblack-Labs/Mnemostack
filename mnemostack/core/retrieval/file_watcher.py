@@ -73,6 +73,14 @@ class _DebouncedHandler(FileSystemEventHandler):
             self._timer = threading.Timer(self._debounce_s, self._flush)
             self._timer.start()
 
+    def cancel(self) -> None:
+        """Cancel any pending debounce timer and discard queued paths."""
+        with self._lock:
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+            self._pending.clear()
+
     def _flush(self) -> None:
         with self._lock:
             paths = self._pending.copy()
@@ -93,7 +101,10 @@ class FileWatcher:
         debounce_ms: int | None = None,
     ):
         self._watch_dir = watch_dir
-        self._debounce_ms = debounce_ms or settings.retrieval.file_watch_debounce_ms
+        self._debounce_ms = (
+            debounce_ms if debounce_ms is not None
+            else settings.retrieval.file_watch_debounce_ms
+        )
         self._handler = _DebouncedHandler(on_files_changed, self._debounce_ms, watch_dir)
         self._observer: Observer | None = None
 
@@ -106,7 +117,9 @@ class FileWatcher:
         self._observer.start()
 
     def stop(self) -> None:
-        """Stop watching."""
+        """Stop watching and cancel any pending debounce timer."""
+        # Cancel pending timer first to prevent callback firing after stop
+        self._handler.cancel()
         if self._observer:
             self._observer.stop()
             self._observer.join(timeout=5)
