@@ -52,22 +52,31 @@ class _DebouncedHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
-        path = Path(event.src_path)
+        # Collect paths to process: src_path always, plus dest_path for
+        # MovedEvents so renamed/moved files get re-indexed at their new location.
+        raw_paths = [event.src_path]
+        dest = getattr(event, "dest_path", None)
+        if dest is not None:
+            raw_paths.append(dest)
 
-        # Skip non-indexable files
-        if path.suffix.lower() not in _INDEXABLE_EXTENSIONS:
-            return
+        to_add: list[Path] = []
+        for raw in raw_paths:
+            path = Path(raw)
+            if path.suffix.lower() not in _INDEXABLE_EXTENSIONS:
+                continue
+            try:
+                rel_parts = path.relative_to(self._watch_root).parts
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIRS for part in rel_parts):
+                continue
+            to_add.append(path)
 
-        # Skip files in ignored directories (check relative to watch root only)
-        try:
-            rel_parts = path.relative_to(self._watch_root).parts
-        except ValueError:
-            return
-        if any(part in _SKIP_DIRS for part in rel_parts):
+        if not to_add:
             return
 
         with self._lock:
-            self._pending.add(path)
+            self._pending.update(to_add)
             if self._timer:
                 self._timer.cancel()
             self._timer = threading.Timer(self._debounce_s, self._flush)

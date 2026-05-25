@@ -87,7 +87,7 @@ class FTSIndex:
                 qualified_name TEXT NOT NULL,
                 last_modified REAL NOT NULL,
                 dependencies TEXT NOT NULL DEFAULT '[]',
-                embedding BLOB
+                embedding BLOB NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
             CREATE INDEX IF NOT EXISTS idx_chunks_qname ON chunks(qualified_name);
