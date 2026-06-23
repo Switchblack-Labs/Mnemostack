@@ -12,7 +12,7 @@ This document proposes concrete architectural improvements to Mnemo based on a r
 
 ## The Single Most Important Reframe
 
-The current architecture positions Mnemo as an MCP server for Claude Code users. This is the wrong identity. The session memory problem is not a Claude Code problem — it is a universal LLM problem.
+The current architecture positions Mnemo as a session memory tool for Claude Code users. This is the wrong identity. The code graph problem — understanding how functions connect across files — is a universal LLM problem.
 
 ```
 Turn 1:    user explains their architecture decisions
@@ -24,9 +24,9 @@ Turn 200:  model has no memory of turn 1-50 at all
 
 This happens in ChatGPT, Claude.ai, Cursor, Windsurf, Copilot Chat — every long-running LLM session. Nobody has shipped a clean, universal fix for it.
 
-**Mnemo should own this problem across all LLM interfaces, not just Claude Code.**
+**Mnemo should own the code graph problem across all LLM interfaces, not just Claude Code.**
 
-MCP is one transport. It should not be the identity.
+MCP is one transport. The call graph is the identity.
 
 ---
 
@@ -427,26 +427,26 @@ The following features would objectively make Mnemo a worse version of an existi
 │              │        Mnemo Core           │                           │
 │              │                             │                           │
 │              │  query_codebase()           │                           │
+│              │  get_full_context()         │                           │
 │              │  get_session_context()      │                           │
-│              │  compress_session()         │                           │
-│              │  log_relevance()            │                           │
+│              │  get_memory_stats()         │                           │
 │              └──────────────┬──────────────┘                           │
 │                             │                                           │
 │              ┌──────────────┴──────────────┐                           │
 │              │                             │                           │
 │              ▼                             ▼                           │
-│   ┌──────────────────┐         ┌──────────────────────┐               │
-│   │   TIER 1         │         │   TIER 2             │               │
-│   │   Session Memory │         │   Codebase Retrieval │               │
-│   │                  │         │   (optional plugin)  │               │
-│   │  session_watcher │         │                      │               │
-│   │  compression.py  │         │  FTS5 + FAISS + RRF  │               │
-│   │  consolidation.py│◄────────│  2-hop BFS expansion │               │
-│   │                  │ community│  Tree-sitter parser  │               │
-│   │  snapshot stack  │ tagging  │  lightweight graph   │               │
-│   │  snap_001.json   │         │  (3 node, 3 edge)    │               │
-│   │  snap_002.json   │         │  Leiden communities  │               │
-│   └──────────────────┘         └──────────────────────┘               │
+│   ┌──────────────────────┐         ┌──────────────────┐               │
+│   │   TIER 1             │         │   TIER 2         │               │
+│   │   Code Retrieval     │         │   Session Memory │               │
+│   │                      │         │                  │               │
+│   │  FTS5 + FAISS + RRF  │         │  session_watcher │               │
+│   │  2-hop BFS expansion │────────►│  compression.py  │               │
+│   │  Tree-sitter parser  │community│  consolidation.py│               │
+│   │  lightweight graph   │ tagging │                  │               │
+│   │  (3 node, 3 edge)    │         │  snapshot stack  │               │
+│   │  Leiden communities  │         │  snap_001.json   │               │
+│   │                      │         │  snap_002.json   │               │
+│   └──────────────────────┘         └──────────────────┘               │
 │              │                             │                           │
 │              └──────────────┬──────────────┘                           │
 │                             │                                           │

@@ -10,6 +10,7 @@ Used to enrich retrieval results with related code that pure similarity would mi
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections import deque
 from enum import Enum
 from pathlib import Path
@@ -18,6 +19,27 @@ import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser
 
 from mnemostack.config.settings import settings
+
+# Thread lock for CallGraph SQLite operations (graph.db is accessed from
+# the file watcher's background thread via reindex_file -> remove_file).
+_graph_lock = threading.Lock()
+
+# Cached Python parser (Language + Parser are expensive to construct).
+_PY_LANGUAGE: Language | None = None
+_PY_PARSER: Parser | None = None
+
+
+_parser_lock = threading.Lock()
+
+
+def _get_python_parser() -> Parser:
+    global _PY_LANGUAGE, _PY_PARSER
+    if _PY_PARSER is None:
+        with _parser_lock:
+            if _PY_PARSER is None:
+                _PY_LANGUAGE = Language(tspython.language())
+                _PY_PARSER = Parser(_PY_LANGUAGE)
+    return _PY_PARSER
 
 
 class NodeType(str, Enum):
@@ -44,7 +66,7 @@ class CallGraph:
     @property
     def db(self) -> sqlite3.Connection:
         if self._db is None:
-            self._db = sqlite3.connect(str(self._db_path))
+            self._db = sqlite3.connect(str(self._db_path), check_same_thread=False)
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
             self._init_schema()
@@ -77,60 +99,64 @@ class CallGraph:
 
         Does NOT auto-commit. Caller must call commit() to persist changes.
         """
-        cursor = self.db.execute(
-            "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return row[0]
+        with _graph_lock:
+            cursor = self.db.execute(
+                "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row[0]
 
-        cursor = self.db.execute(
-            "INSERT INTO nodes (qualified_name, node_type, file_path) VALUES (?, ?, ?)",
-            (qualified_name, node_type.value, file_path),
-        )
-        assert cursor.lastrowid is not None  # guaranteed for AUTOINCREMENT tables
-        return cursor.lastrowid
+            cursor = self.db.execute(
+                "INSERT INTO nodes (qualified_name, node_type, file_path) VALUES (?, ?, ?)",
+                (qualified_name, node_type.value, file_path),
+            )
+            assert cursor.lastrowid is not None
+            return cursor.lastrowid
 
     def add_edge(self, source_qname: str, target_qname: str, edge_type: EdgeType) -> None:
         """Add an edge between two nodes (by qualified name). No-op if edge exists."""
-        source = self.db.execute(
-            "SELECT id FROM nodes WHERE qualified_name = ?", (source_qname,)
-        ).fetchone()
-        target = self.db.execute(
-            "SELECT id FROM nodes WHERE qualified_name = ?", (target_qname,)
-        ).fetchone()
-        if not source or not target:
-            return
+        with _graph_lock:
+            source = self.db.execute(
+                "SELECT id FROM nodes WHERE qualified_name = ?", (source_qname,)
+            ).fetchone()
+            target = self.db.execute(
+                "SELECT id FROM nodes WHERE qualified_name = ?", (target_qname,)
+            ).fetchone()
+            if not source or not target:
+                return
 
-        self.db.execute(
-            """INSERT OR IGNORE INTO edges (source_id, target_id, edge_type)
-               VALUES (?, ?, ?)""",
-            (source[0], target[0], edge_type.value),
-        )
+            self.db.execute(
+                """INSERT OR IGNORE INTO edges (source_id, target_id, edge_type)
+                   VALUES (?, ?, ?)""",
+                (source[0], target[0], edge_type.value),
+            )
 
     def commit(self) -> None:
         """Commit pending changes. Call after batch add_node/add_edge operations."""
-        self.db.commit()
+        with _graph_lock:
+            self.db.commit()
 
     def remove_file(self, file_path: str) -> None:
         """Remove all nodes and edges associated with a file."""
-        node_ids = [
-            row[0]
-            for row in self.db.execute(
-                "SELECT id FROM nodes WHERE file_path = ?", (file_path,)
-            ).fetchall()
-        ]
-        if not node_ids:
-            return
+        with _graph_lock:
+            node_ids = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT id FROM nodes WHERE file_path = ?", (file_path,)
+                ).fetchall()
+            ]
+            if not node_ids:
+                return
 
-        placeholders = ",".join("?" * len(node_ids))
-        self.db.execute(
-            f"DELETE FROM edges WHERE source_id IN ({placeholders})"
-            f" OR target_id IN ({placeholders})",
-            node_ids + node_ids,
-        )
-        self.db.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids)
-        self.db.commit()
+            placeholders = ",".join("?" * len(node_ids))
+            self.db.execute(
+                f"DELETE FROM edges WHERE source_id IN ({placeholders})"
+                f" OR target_id IN ({placeholders})",
+                node_ids + node_ids,
+            )
+            self.db.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", node_ids)
+            self.db.commit()
 
     def get_neighbors(
         self,
@@ -148,40 +174,41 @@ class CallGraph:
         Returns:
             List of qualified names reachable within `hops` (excludes start node).
         """
-        start = self.db.execute(
-            "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
-        ).fetchone()
-        if not start:
-            return []
+        with _graph_lock:
+            start = self.db.execute(
+                "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
+            ).fetchone()
+            if not start:
+                return []
 
-        visited: set[int] = {start[0]}
-        queue: deque[tuple[int, int]] = deque([(start[0], 0)])
-        result_ids: list[int] = []
+            visited: set[int] = {start[0]}
+            queue: deque[tuple[int, int]] = deque([(start[0], 0)])
+            result_ids: list[int] = []
 
-        while queue:
-            node_id, depth = queue.popleft()
-            if depth >= hops:
-                continue
+            while queue:
+                node_id, depth = queue.popleft()
+                if depth >= hops:
+                    continue
 
-            neighbors = self._get_adjacent(node_id, direction)
-            for neighbor_id in neighbors:
-                if neighbor_id not in visited:
-                    visited.add(neighbor_id)
-                    result_ids.append(neighbor_id)
-                    queue.append((neighbor_id, depth + 1))
+                neighbors = self._get_adjacent_unlocked(node_id, direction)
+                for neighbor_id in neighbors:
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        result_ids.append(neighbor_id)
+                        queue.append((neighbor_id, depth + 1))
 
-        if not result_ids:
-            return []
+            if not result_ids:
+                return []
 
-        placeholders = ",".join("?" * len(result_ids))
-        rows = self.db.execute(
-            f"SELECT qualified_name FROM nodes WHERE id IN ({placeholders})",
-            result_ids,
-        ).fetchall()
-        return [row[0] for row in rows]
+            placeholders = ",".join("?" * len(result_ids))
+            rows = self.db.execute(
+                f"SELECT qualified_name FROM nodes WHERE id IN ({placeholders})",
+                result_ids,
+            ).fetchall()
+            return [row[0] for row in rows]
 
-    def _get_adjacent(self, node_id: int, direction: str) -> list[int]:
-        """Get adjacent node IDs based on direction."""
+    def _get_adjacent_unlocked(self, node_id: int, direction: str) -> list[int]:
+        """Get adjacent node IDs. Must be called while holding _graph_lock."""
         ids: list[int] = []
         if direction in ("outgoing", "both"):
             rows = self.db.execute(
@@ -197,13 +224,23 @@ class CallGraph:
 
     @property
     def node_count(self) -> int:
-        row = self.db.execute("SELECT COUNT(*) FROM nodes").fetchone()
+        with _graph_lock:
+            row = self.db.execute("SELECT COUNT(*) FROM nodes").fetchone()
         return row[0] if row else 0
 
     @property
     def edge_count(self) -> int:
-        row = self.db.execute("SELECT COUNT(*) FROM edges").fetchone()
+        with _graph_lock:
+            row = self.db.execute("SELECT COUNT(*) FROM edges").fetchone()
         return row[0] if row else 0
+
+    def has_node(self, qualified_name: str) -> bool:
+        """Check if a node exists by qualified name."""
+        with _graph_lock:
+            row = self.db.execute(
+                "SELECT 1 FROM nodes WHERE qualified_name = ?", (qualified_name,)
+            ).fetchone()
+        return row is not None
 
     def close(self) -> None:
         if self._db:
@@ -232,8 +269,7 @@ def build_graph_for_python_file(
     if source is None:
         source = file_path.read_bytes()
 
-    language = Language(tspython.language())
-    parser = Parser(language)
+    parser = _get_python_parser()
     tree = parser.parse(source)
     root = tree.root_node
 
@@ -341,10 +377,7 @@ def _extract_python_calls(
             method = parts[-1]
             for cls in defined_classes:
                 candidate = f"{file_path}::{cls}.{method}"
-                # Check if this node exists before creating edge
-                if graph.db.execute(
-                    "SELECT 1 FROM nodes WHERE qualified_name = ?", (candidate,)
-                ).fetchone():
+                if graph.has_node(candidate):
                     graph.add_edge(caller, candidate, EdgeType.CALLS)
                     break
 

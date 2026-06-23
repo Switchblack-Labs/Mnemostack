@@ -85,7 +85,7 @@ def reciprocal_rank_fusion(
                 "chunk_type": r.chunk_type,
                 "qualified_name": r.qualified_name,
                 "last_modified": r.last_modified,
-                "dependencies": [],
+                "dependencies": r.dependencies,
             }
 
     # Sort by RRF score descending, take top_k

@@ -1,120 +1,35 @@
-# Context Memory Daemon — Architecture v2
+# Mnemostack — Architecture v2
 
 ## Project Summary
 
-A background daemon exposed as an MCP server that gives any MCP-compatible AI coding assistant (Claude Code, Cursor, Copilot, Continue.dev, local LLMs) persistent session memory and fast semantic codebase retrieval. Model-agnostic by design — the MCP interface means any client that speaks MCP gets the full memory system for free with zero custom integration.
+A background daemon exposed as an MCP server that gives any MCP-compatible AI coding assistant (Claude Code, Cursor, Copilot, Continue.dev, local LLMs) graph-aware code retrieval and persistent session memory. Builds a live dependency graph of your codebase via tree-sitter AST parsing, then uses 2-hop BFS expansion + hybrid FAISS/FTS5 search to retrieve entire dependency chains — not isolated snippets. Model-agnostic by design — any client that speaks MCP gets the full system for free with zero custom integration.
 
 ---
 
 ## Core Problem
 
-AI coding assistants use transformer-based LLMs with fixed context windows. As sessions grow:
-- Early context (architecture decisions, constraints, file relationships) gets pushed out
-- The model re-debates settled questions and forgets stack choices
-- Current fix is dumping everything back into context, which:
-  - Costs more tokens (linear growth per turn)
-  - Slows inference (transformers have O(n^2) attention complexity — more tokens = quadratically more compute)
-  - Reduces accuracy (Stanford "lost in the middle" research — models perform worst on info buried in the middle of large contexts)
-- Bigger context windows (Gemini 1M tokens) make this WORSE, not better — the lost-in-the-middle problem scales with window size
+AI coding assistants have no understanding of how code connects. When you ask about a function:
+- They retrieve that file in isolation, missing the functions it calls in other files
+- Cross-file dependency chains (A calls B calls C) are invisible to vector search
+- The model pastes in wrong files or asks you to paste the right ones manually
+- Current RAG approaches chunk code into arbitrary token windows — splitting functions mid-body, losing AST structure
+
+On top of that, LLMs have fixed context windows. As sessions grow, early decisions get pushed out and the model forgets what was already settled.
 
 ## Core Thesis
 
-Current tools treat context like a bucket (dump everything). We treat it like a scalpel (inject only what's relevant). This gives three wins simultaneously — not as tradeoffs:
-1. Less tokens → cheaper
-2. Faster responses → O(n^2) attention over fewer tokens
-3. Better accuracy → model works with clean, targeted context instead of searching through noise
+Code is a graph, not a bag of text. Functions call other functions. Classes inherit from other classes. Files import from other files. Any retrieval system that ignores this structure is fundamentally broken.
+
+Mnemostack builds a live dependency graph from your AST, then uses that graph to retrieve complete dependency chains — not isolated snippets. Combined with hybrid search (semantic + exact identifier) and recency weighting, this gives:
+1. Complete context — ask about auth and get auth + the DB query it calls + the crypto function two hops away
+2. Fewer tokens — graph-targeted retrieval instead of dumping entire files
+3. Better accuracy — the model sees structurally related code, not semantically similar but irrelevant matches
 
 ---
 
-## Architecture — Two-Tier Memory System
+## Architecture — Two-Tier System
 
-### Tier 1: Two-Tier Compression Pipeline
-
-**Issue with naive approach:** Hitting an LLM every N turns for compression is the slowest, most expensive, and least reliable part of the system. Between LLM calls, memory is stale.
-
-**Solution: Two-tier compression — local extraction + periodic LLM consolidation**
-
-#### Layer 1A: Lightweight Local Extraction (every turn, free)
-- Runs locally with zero API cost
-- Extracts on every turn:
-  - Keywords and named entities (libraries, frameworks, file names, variable names mentioned)
-  - AST diffs — what functions/classes/files changed this turn
-  - Dependency graph updates — new imports, new function calls, new file relationships
-  - Explicit user constraints and decisions (pattern match on phrases like "don't use X", "we decided Y", "the constraint is Z")
-  - Action items and open questions
-- Stores as structured JSON, append-only log between LLM consolidation cycles
-- This ensures memory is NEVER stale — there's always a fresh local extraction from the most recent turn
-
-#### Layer 1B: LLM Consolidation (every N turns, configurable — start with 20-30)
-- Takes the accumulated local extraction log + previous consolidated memory
-- Sends to LLM API with structured prompt:
-  - Extract: decisions made + rationale, active constraints, current architecture state, open questions, resolved questions
-  - Merge: recursive consolidation — old compressed memories merge with new ones
-  - Prune: remove contradicted or superseded information
-  - Output: fixed-size structured memory blob that stays under a token budget regardless of session length
-- Writes to CLAUDE.md (or equivalent memory file the coding assistant reads)
-- The local extraction log is cleared after successful consolidation
-
-#### Compression tuning parameters:
-- `local_extraction_mode`: what to extract locally (keywords, AST diffs, constraints, all)
-- `consolidation_interval`: turns between LLM consolidation (default 25)
-- `memory_token_budget`: max size of consolidated memory blob (default 3000 tokens)
-- `consolidation_model`: which LLM to use (can be cheap local model for dev, expensive model for production)
-
-#### Flow
-
-```
-session transcript (every turn)
-        |
-        v
-+-------------------+
-|  local_extractor  |  runs every turn, zero API cost
-|                   |  extracts: keywords, AST diffs,
-|  (core/           |  constraints, entities, action items
-|   compression/    |
-|   local_          |  stores as append-only JSON log
-|   extractor.py)   |
-+--------+----------+
-         |
-         | accumulated log (every N turns)
-         v
-+-------------------+
-|  llm_consolidator |  sends log + previous memory to LLM
-|                   |  structured JSON output schema:
-|  (core/           |   {
-|   compression/    |     "decisions": [...],
-|   llm_            |     "constraints": [...],
-|   consolidator.py)|     "open_questions": [...],
-|                   |     "architecture_state": {...},
-|                   |     "resolved": [...]
-|                   |   }
-+--------+----------+
-         |
-         | consolidated memory blob
-         v
-+-------------------+
-|  memory_store     |  versioned snapshot files
-|  snapshots/       |  snap_001.json, snap_002.json ...
-|                   |  lazy merge: only merges two oldest
-|                   |  when approaching token budget ceiling
-|                   |  latest pointer: latest.json (symlink)
-+--------+----------+
-         |
-         v
-  served via get_session_context() MCP tool
-  returns: latest consolidated memory + any local
-  extractions since last consolidation
-```
-
-#### Why versioned snapshots instead of a merged blob
-
-Single merged blob: information loss compounds every cycle. By cycle 5 you've silently dropped nuance you didn't know you needed, with no way to recover it.
-
-Versioned stack: each snapshot is immutable once written. Merge only happens when you're near the token budget, and only the two oldest snapshots merge — the recent ones stay intact. You can inspect history and roll back if something critical got dropped.
-
----
-
-### Tier 2: Dependency-Aware Semantic Retrieval
+### Tier 1: Graph-Aware Code Retrieval
 
 **Issue with naive approach:** AST chunking treats every function/class as isolated. Code doesn't work in isolation — function A calls function B in a different file. Pure semantic search retrieves A but misses B, giving incomplete context.
 
@@ -122,9 +37,9 @@ Versioned stack: each snapshot is immutable once written. Merge only happens whe
 
 **Issue with pure semantic ranking:** A helper function written 6 months ago might be more semantically similar to a query than code edited 30 seconds ago. Recency matters.
 
-**Solution: Dependency-aware retrieval with incremental updates and recency-weighted ranking**
+**Solution: Graph-aware retrieval with incremental updates and recency-weighted ranking**
 
-#### 2A: AST-Aware Code Chunking
+#### 1A: AST-Aware Code Chunking
 - Parse codebase using tree-sitter (supports 100+ languages)
 - Chunk by meaningful code boundaries:
   - Functions/methods (with docstrings and decorators)
@@ -139,7 +54,7 @@ Versioned stack: each snapshot is immutable once written. Merge only happens whe
   - Dependencies (imports, function calls — see 2B)
 - AST chunking reduces irrelevant retrievals by ~40% vs naive token-window splitting
 
-#### 2B: Lightweight Call Graph (Dependency-Aware Retrieval)
+#### 1B: Live Call Graph (the core differentiator)
 - Build a directed graph of function/class dependencies:
   - Function A calls Function B → edge A→B
   - Class X imports module Y → edge X→Y
@@ -151,7 +66,7 @@ Versioned stack: each snapshot is immutable once written. Merge only happens whe
 - Implementation: use tree-sitter queries to extract call sites and imports, store as adjacency list
 - This ensures cross-file relationships are never missed
 
-#### 2C: FAISS HNSW Index
+#### 1C: FAISS HNSW Index
 - Embed each AST chunk using a code embedding model (candidates: OpenAI text-embedding-3-small, CodeBERT, or local model like nomic-embed-text via Ollama)
 - Store embeddings in FAISS HNSW index for O(log n) approximate nearest neighbor retrieval
 - HNSW parameters to tune:
@@ -160,7 +75,7 @@ Versioned stack: each snapshot is immutable once written. Merge only happens whe
   - `efSearch`: query-time accuracy/speed tradeoff (default 128)
 - FAISS runs locally on CPU — zero cost regardless of query volume
 
-#### 2D: Incremental Index Updates
+#### 1D: Incremental Index Updates
 - Watch for file system events using watchdog (Python)
 - On file save:
   - Re-parse only the changed file's AST
@@ -172,7 +87,7 @@ Versioned stack: each snapshot is immutable once written. Merge only happens whe
 - This ensures retrieval is never stale during active development
 - Batch rebuild is still available as a fallback (e.g., on branch switch or initial project load)
 
-#### 2E: Recency-Weighted Ranking
+#### 1E: Recency-Weighted Ranking
 - Final retrieval score = `a * semantic_similarity + b * recency_score + c * dependency_relevance`
 - `semantic_similarity`: cosine similarity from FAISS query (0 to 1)
 - `recency_score`: decaying function based on last-modified timestamp (e.g., exponential decay with half-life of 1 hour during active dev)
@@ -266,6 +181,92 @@ user query (from MCP client)
 
 ---
 
+### Tier 2: Compressed Session Memory
+
+**Issue with naive approach:** Hitting an LLM every N turns for compression is the slowest, most expensive, and least reliable part of the system. Between LLM calls, memory is stale.
+
+**Solution: Two-tier compression — local extraction + periodic LLM consolidation**
+
+#### Layer 2A: Lightweight Local Extraction (every turn, free)
+- Runs locally with zero API cost
+- Extracts on every turn:
+  - Keywords and named entities (libraries, frameworks, file names, variable names mentioned)
+  - AST diffs — what functions/classes/files changed this turn
+  - Dependency graph updates — new imports, new function calls, new file relationships
+  - Explicit user constraints and decisions (pattern match on phrases like "don't use X", "we decided Y", "the constraint is Z")
+  - Action items and open questions
+- Stores as structured JSON, append-only log between LLM consolidation cycles
+- This ensures memory is NEVER stale — there's always a fresh local extraction from the most recent turn
+
+#### Layer 2B: LLM Consolidation (every N turns, configurable — start with 20-30)
+- Takes the accumulated local extraction log + previous consolidated memory
+- Sends to LLM API with structured prompt:
+  - Extract: decisions made + rationale, active constraints, current architecture state, open questions, resolved questions
+  - Merge: recursive consolidation — old compressed memories merge with new ones
+  - Prune: remove contradicted or superseded information
+  - Output: fixed-size structured memory blob that stays under a token budget regardless of session length
+- Writes to CLAUDE.md (or equivalent memory file the coding assistant reads)
+- The local extraction log is cleared after successful consolidation
+
+#### Compression tuning parameters:
+- `local_extraction_mode`: what to extract locally (keywords, AST diffs, constraints, all)
+- `consolidation_interval`: turns between LLM consolidation (default 25)
+- `memory_token_budget`: max size of consolidated memory blob (default 3000 tokens)
+- `consolidation_model`: which LLM to use (can be cheap local model for dev, expensive model for production)
+
+#### Flow
+
+```
+session transcript (every turn)
+        |
+        v
++-------------------+
+|  local_extractor  |  runs every turn, zero API cost
+|                   |  extracts: keywords, AST diffs,
+|  (core/           |  constraints, entities, action items
+|   compression/    |
+|   local_          |  stores as append-only JSON log
+|   extractor.py)   |
++--------+----------+
+         |
+         | accumulated log (every N turns)
+         v
++-------------------+
+|  llm_consolidator |  sends log + previous memory to LLM
+|                   |  structured JSON output schema:
+|  (core/           |   {
+|   compression/    |     "decisions": [...],
+|   llm_            |     "constraints": [...],
+|   consolidator.py)|     "open_questions": [...],
+|                   |     "architecture_state": {...},
+|                   |     "resolved": [...]
+|                   |   }
++--------+----------+
+         |
+         | consolidated memory blob
+         v
++-------------------+
+|  memory_store     |  versioned snapshot files
+|  snapshots/       |  snap_001.json, snap_002.json ...
+|                   |  lazy merge: only merges two oldest
+|                   |  when approaching token budget ceiling
+|                   |  latest pointer: latest.json (symlink)
++--------+----------+
+         |
+         v
+  served via get_session_context() MCP tool
+  returns: latest consolidated memory + any local
+  extractions since last consolidation
+```
+
+#### Why versioned snapshots instead of a merged blob
+
+Single merged blob: information loss compounds every cycle. By cycle 5 you've silently dropped nuance you didn't know you needed, with no way to recover it.
+
+Versioned stack: each snapshot is immutable once written. Merge only happens when you're near the token budget, and only the two oldest snapshots merge — the recent ones stay intact. You can inspect history and roll back if something critical got dropped.
+
+---
+
 ## MCP Server Interface
 
 The entire system is exposed as an MCP server. This is the thinnest layer — just the API surface.
@@ -319,10 +320,10 @@ update_constraint(constraint: string) -> Confirmation
 
 ## How It Replaces (Not Adds To) Current Context
 
-Critical distinction: we are NOT adding retrieval on top of existing context stuffing. We REPLACE the dumb context stuffing.
+Critical distinction: we are NOT adding retrieval on top of existing context stuffing. We REPLACE the dumb context stuffing with graph-targeted retrieval.
 
-- **Before**: coding assistant grabs files → stuffs all into prompt → model processes O(n^2) attention over massive bloated prompt
-- **After**: coding assistant calls our MCP tools → we return compressed memory + top-k relevant chunks → model processes O(k^2) attention where k << n
+- **Before**: coding assistant grabs files → stuffs all into prompt → misses cross-file dependencies → model processes O(n^2) attention over massive bloated prompt with incomplete context
+- **After**: coding assistant calls `query_codebase("auth flow")` → we traverse the call graph → return the function + everything it depends on (2 hops) → model processes O(k^2) attention where k << n, with structurally complete context
 
 The model's transformer architecture doesn't change. We control what it sees before it thinks. Every API call is a fresh forward pass on whatever tokens are in the prompt — we just make those tokens cleaner and more relevant.
 
@@ -341,10 +342,11 @@ WITHOUT Mnemo (turn 200):
 
 WITH Mnemo (turn 200):
   +------------------------------------------+
-  | prompt = session summary (~3k tokens)     |
-  |        + top-k chunks (~2-4k tokens)      |
+  | prompt = graph-traversed chunks (~2-4k)   |
+  |        + session summary (~3k tokens)     |
   | ~5,000-7,000 tokens per turn              |
   | stays flat regardless of session length   |
+  | structurally complete dependency chains   |
   | O(k^2) attention where k << n             |
   +------------------------------------------+
 
@@ -358,12 +360,12 @@ WITH Mnemo (turn 200):
 
 | Decision | Choice | Why |
 |---|---|---|
+| Retrieval | Hybrid FAISS HNSW + FTS5/BM25 | Best of semantic + exact identifier matching |
 | Memory format | Versioned snapshot stack | Prevents silent info loss from recursive merge |
 | Compression | Two-tier (local + LLM) | Memory is never stale; LLM cost amortized over N turns |
-| Retrieval | FAISS HNSW | O(log n) vs O(n) for Chroma/naive cosine |
 | Chunking | AST boundaries (tree-sitter) | Retrieves complete functions/classes, not arbitrary slices |
-| Dependency expansion | Call graph (one-hop default) | Catches cross-file relationships at function granularity |
-| Ranking | Recency-weighted semantic | Recently edited code outranks stale semantic matches |
+| Dependency expansion | Call graph (2-hop BFS) | Catches cross-file relationships at function granularity |
+| Ranking | Recency-weighted RRF fusion | Recently edited code outranks stale semantic matches |
 | Index updates | Incremental on file save | Retrieval is never stale during active development |
 | Compression output | Structured JSON schema | Prevents LLM from dropping fields, easier to inspect/debug |
 | Dev LLM | Ollama (Llama 3 8B) | Free, good enough for compression, no API credits burned |
@@ -375,16 +377,18 @@ WITH Mnemo (turn 200):
 
 ```
 core/
+  retrieval/
+    ast_chunker.py          — tree-sitter based code chunking
+    call_graph.py           — lightweight dependency graph builder (3 node types, 3 edge types)
+    faiss_index.py          — FAISS HNSW index management (build, query, incremental update)
+    fts_index.py            — FTS5 keyword index (BM25 + Porter stemming)
+    ranker.py               — RRF fusion + recency-weighted ranking
+    communities.py          — Leiden community detection on call graph
+    file_watcher.py         — file save event listener for incremental updates
   compression/
     local_extractor.py      — keyword, AST diff, constraint extraction (runs every turn)
     llm_consolidator.py     — LLM-based recursive memory consolidation
     memory_store.py         — read/write compressed memory blob, snapshot stack management
-  retrieval/
-    ast_chunker.py          — tree-sitter based code chunking
-    call_graph.py           — lightweight dependency graph builder
-    faiss_index.py          — HNSW index management (build, query, incremental update)
-    ranker.py               — recency-weighted semantic ranking
-    file_watcher.py         — file save event listener for incremental updates
 mcp/
   server.py                 — MCP server setup and lifecycle
   tools.py                  — tool definitions (query_codebase, get_session_context, etc.)
@@ -477,4 +481,4 @@ These are architecturally valid but premature before the core works:
 
 ## One-Liner Pitch
 
-"An MCP server that gives any AI coding assistant persistent session memory and fast semantic codebase retrieval."
+"An MCP server that builds a live call graph of your codebase and gives any AI coding assistant graph-aware code retrieval."

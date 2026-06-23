@@ -2,36 +2,62 @@
 
 ## What This Is
 
-A local daemon (MCP server) that gives any MCP-compatible AI coding assistant persistent compressed session memory and fast semantic codebase retrieval. Model-agnostic — any client that speaks MCP gets the full memory system for free.
+A local daemon (MCP server) that builds a live dependency graph of your codebase and gives any MCP-compatible AI coding assistant graph-aware code retrieval. Ask about any function and get back the entire dependency chain — across files, automatically. Model-agnostic — any client that speaks MCP gets it for free.
 
-One-liner: "An MCP server that gives any AI coding assistant persistent session memory and fast semantic codebase retrieval."
+One-liner: "An MCP server that builds a live call graph of your codebase and gives any AI coding assistant graph-aware code retrieval."
 
 ---
 
 ## Core Problem
 
-LLMs have fixed context windows. As sessions grow:
-- Early decisions/constraints get pushed out
-- Model re-debates settled questions
-- Dumping everything back in costs more tokens (linear growth), slows inference (O(n^2) attention), and reduces accuracy (lost-in-the-middle effect)
+AI coding assistants have no understanding of how code connects. They retrieve isolated files, miss cross-file dependency chains, and chunk code into arbitrary token windows that split functions mid-body. When you ask about authentication, they find `auth.py` but miss the DB query it calls and the crypto function two hops away. On top of that, LLMs forget everything between sessions.
 
 ## Core Thesis
 
-Treat context like a scalpel, not a bucket. Inject only what's relevant. Three simultaneous wins: cheaper (fewer tokens), faster (O(k^2) where k << n), more accurate (clean targeted context).
+Code is a graph, not a bag of text. Any retrieval system that ignores call-graph structure is fundamentally broken. Mnemostack builds a live dependency graph from your AST, then uses that graph to retrieve complete dependency chains — not isolated snippets. Graph-targeted retrieval gives complete context with fewer tokens and higher accuracy.
 
 ---
 
-## Architecture — Two-Tier Memory System
+## Architecture — Two-Tier System
 
-### Tier 1: Compression Pipeline (Session Memory)
+### Tier 1: Graph-Aware Code Retrieval
 
-**Layer 1A — Local Extraction (every turn, free, zero API)**
+**1A — AST-Aware Code Chunking**
+- tree-sitter for multi-language AST parsing (100+ languages)
+- Chunks by: functions/methods, classes, module-level constants, import blocks
+- Each chunk stores: file path, symbol name, line range, last modified timestamp, dependencies
+
+**1B — Lightweight Call Graph**
+- 3 node types: File, Function, Class (qualified names: `file_path::ClassName.method_name`)
+- 3 edge types: CALLS, IMPORTS_FROM, CONTAINS
+- Stored in SQLite (graph.db)
+- 2-hop BFS expansion on retrieval for cross-file dependency chains
+
+**1C — Hybrid Retrieval: FTS5 + FAISS + RRF**
+- FAISS HNSW for semantic similarity (O(log n), local CPU)
+- FTS5 (SQLite) for exact identifier/keyword search (BM25 + Porter stemming)
+- Reciprocal Rank Fusion to merge both ranked lists: `score(d) = sum(1 / (60 + rank_i(d)))`
+- Query intent boost: PascalCase -> +1.5x Class, snake_case -> +1.5x Func, dotted.path -> +2.0x qualified name match
+
+**1D — Incremental Index Updates**
+- watchdog monitors filesystem for file saves (debounce 500ms)
+- On save: re-parse changed file AST, diff chunks, update FAISS + FTS5 + call graph
+- Batch rebuild available as fallback (branch switch, initial load)
+
+**1E — Recency-Weighted Ranking**
+- `score = a * semantic_similarity + b * recency_score + c * dependency_relevance`
+- Weights: a=0.6, b=0.25, c=0.15 (tunable)
+- Recency: exponential decay, half-life ~1 hour during active dev
+
+### Tier 2: Compressed Session Memory
+
+**Layer 2A — Local Extraction (every turn, free, zero API)**
 - Runs locally on every turn
 - Extracts: keywords, named entities, AST diffs, dependency graph updates, explicit user constraints/decisions, action items, open questions
 - Stores as structured JSON, append-only log between consolidation cycles
 - Memory is never stale — always a fresh extraction from the most recent turn
 
-**Layer 1B — LLM Consolidation (every N turns, default 25)**
+**Layer 2B — LLM Consolidation (every N turns, default 25)**
 - Takes accumulated local extraction log + previous consolidated memory
 - Structured prompt to LLM: extract decisions, merge, prune contradictions
 - Outputs fixed-size structured JSON memory blob (budget: ~3000 tokens)
@@ -54,35 +80,6 @@ Treat context like a scalpel, not a bucket. Inject only what's relevant. Three s
 - `consolidation_interval`: turns between LLM consolidation (default 25)
 - `memory_token_budget`: max consolidated memory size (default 3000 tokens)
 - `consolidation_model`: configurable via litellm (Ollama local for dev, frontier for prod)
-
-### Tier 2: Semantic Retrieval (Codebase Search)
-
-**2A — AST-Aware Code Chunking**
-- tree-sitter for multi-language AST parsing (100+ languages)
-- Chunks by: functions/methods, classes, module-level constants, import blocks
-- Each chunk stores: file path, symbol name, line range, last modified timestamp, dependencies
-
-**2B — Lightweight Call Graph**
-- 3 node types: File, Function, Class (qualified names: `file_path::ClassName.method_name`)
-- 3 edge types: CALLS, IMPORTS_FROM, CONTAINS
-- Stored in SQLite (graph.db)
-- 2-hop BFS expansion on retrieval for cross-file dependency chains
-
-**2C — Hybrid Retrieval: FTS5 + FAISS + RRF**
-- FAISS HNSW for semantic similarity (O(log n), local CPU)
-- FTS5 (SQLite) for exact identifier/keyword search (BM25 + Porter stemming)
-- Reciprocal Rank Fusion to merge both ranked lists: `score(d) = sum(1 / (60 + rank_i(d)))`
-- Query intent boost: PascalCase -> +1.5x Class, snake_case -> +1.5x Func, dotted.path -> +2.0x qualified name match
-
-**2D — Incremental Index Updates**
-- watchdog monitors filesystem for file saves (debounce 500ms)
-- On save: re-parse changed file AST, diff chunks, update FAISS + FTS5 + call graph
-- Batch rebuild available as fallback (branch switch, initial load)
-
-**2E — Recency-Weighted Ranking**
-- `score = a * semantic_similarity + b * recency_score + c * dependency_relevance`
-- Weights: a=0.6, b=0.25, c=0.15 (tunable)
-- Recency: exponential decay, half-life ~1 hour during active dev
 
 ### Tier 1 + Tier 2 Integration: Community-Tagged Snapshots
 
@@ -133,10 +130,6 @@ All source lives under `mnemostack/` package (avoids namespace collision with `m
 Mnemostack/
   mnemostack/                  # Python package root
     core/
-      compression/
-        local_extractor.py     -- keyword, AST diff, constraint extraction (every turn)
-        llm_consolidator.py    -- LLM compression via litellm, community-tagged output
-        memory_store.py        -- versioned snapshot stack, graph-aware lazy merge
       retrieval/
         ast_chunker.py         -- tree-sitter code chunking by symbol boundaries
         call_graph.py          -- lightweight graph (3 node, 3 edge), 2-hop BFS
@@ -145,6 +138,10 @@ Mnemostack/
         ranker.py              -- recency-weighted semantic + dependency ranking
         file_watcher.py        -- watchdog file save listener, incremental updates
         communities.py         -- Leiden community detection on graph
+      compression/
+        local_extractor.py     -- keyword, AST diff, constraint extraction (every turn)
+        llm_consolidator.py    -- LLM compression via litellm, community-tagged output
+        memory_store.py        -- versioned snapshot stack, graph-aware lazy merge
       router.py                -- model-agnostic compression model selection (litellm)
     mcp/
       server.py                -- FastMCP server, stdio transport, entrypoint
@@ -212,16 +209,16 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 - Config system: `config/settings.py` + `config/defaults.yaml` — typed config, yaml loading, deep merge overrides, path resolution
 - All verified: ruff clean, 11 tests passed (tool dispatch, protocol-level calls, error handling, config edge cases, serialization)
 
-### Next: Retrieval Pipeline
-1. `core/retrieval/ast_chunker.py` — tree-sitter chunking
-2. `core/retrieval/faiss_index.py` — FAISS HNSW index
-3. `core/retrieval/fts_index.py` — FTS5 index
-4. `core/retrieval/ranker.py` — RRF fusion + recency ranking
-5. `core/retrieval/call_graph.py` — lightweight graph + 2-hop BFS
+### DONE: Retrieval Pipeline
+1. `core/retrieval/ast_chunker.py` — tree-sitter chunking (Python/JS/TS + fallback)
+2. `core/retrieval/faiss_index.py` — FAISS HNSW index with SQLite persistence
+3. `core/retrieval/fts_index.py` — FTS5 index (BM25 + Porter stemming)
+4. `core/retrieval/ranker.py` — RRF fusion + recency ranking + query intent boost
+5. `core/retrieval/call_graph.py` — lightweight graph + 2-hop BFS (Python extraction)
 6. `core/retrieval/communities.py` — Leiden community detection
-7. `core/retrieval/file_watcher.py` — incremental index updates
+7. `core/retrieval/file_watcher.py` — debounced incremental index updates
 
-### Then: Compression Pipeline
+### Next: Compression Pipeline
 8. `core/router.py` — litellm model router
 9. `core/compression/local_extractor.py` — per-turn extraction
 10. `core/compression/llm_consolidator.py` — LLM consolidation
@@ -244,10 +241,11 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 
 ## Unique Differentiators (What Nobody Else Has)
 
-1. **Community-tagged snapshots** — session memory filtered by code community per query
-2. **Graph-aware snapshot merging** — structural importance scoring prevents silent info loss
-3. **Two-tier compression** — local extraction (never stale) + periodic LLM consolidation (deep understanding)
-4. **Model-agnostic** — works with any MCP client and any LLM provider
+1. **Live call graph** — tree-sitter AST → dependency graph (functions, classes, imports) → 2-hop BFS expansion retrieves entire dependency chains, not isolated snippets
+2. **Hybrid graph + search** — FAISS semantic + FTS5 exact identifiers fused via RRF, then expanded through the call graph
+3. **Leiden community detection** — automatically clusters related code; enables community-tagged session snapshots
+4. **Graph-aware snapshot merging** — structural importance scoring from the call graph prevents silent info loss during memory compression
+5. **Model-agnostic** — works with any MCP client and any LLM provider
 
 ## Explicitly Out of Scope
 

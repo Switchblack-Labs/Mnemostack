@@ -1,10 +1,15 @@
-Local MCP daemon with persistent compressed session memory and fast semantic code retrieval. Shrinks context windows and eliminates redundant token usage by giving LLMs long-term memory over your codebase.
-The problem: Every time you start a new session with an LLM, it forgets everything. You re-paste files, re-explain your project, burn through tokens feeding it context it's already seen. Developers and companies are wasting significant budget on redundant context.
+Local MCP daemon that builds a live dependency graph of your codebase and gives AI coding assistants graph-aware code retrieval. Ask about any function and get back not just that function, but everything it calls and everything that calls it — across files, automatically.
+
+The problem: AI coding assistants have no idea how your code connects. They retrieve isolated files, miss cross-file dependencies, and have zero understanding of your call graph. When you ask about authentication, they find `auth.py` but miss the `db.py` query it calls and the `crypto.py` hash function two hops away. You waste tokens manually pasting related files.
+
 How it works:
 
-AST-aware chunking via tree-sitter — retrieves functions and classes, not arbitrary text blocks
-FAISS HNSW index for fast semantic search over your codebase
-Compressed session summaries that persist across sessions
-Runs locally as an MCP server — plugs into Claude, Cursor, or any MCP-compatible tool
+Tree-sitter AST parsing builds a lightweight call graph (functions, classes, imports — who calls what)
+2-hop BFS expansion on the graph retrieves entire dependency chains, not isolated snippets
+Hybrid search: FAISS HNSW (semantic similarity) + FTS5/BM25 (exact identifier matching) fused with Reciprocal Rank Fusion
+Recency-weighted ranking ensures recently edited code outranks stale matches
+Leiden community detection clusters related code automatically
+Persistent compressed session memory survives across sessions
+Runs locally as an MCP server — plugs into Claude Code, Cursor, or any MCP-compatible tool
 
-Status: Early development. Architecture designed, core scaffolding in place.
+Status: Retrieval pipeline built and tested (AST chunker, FAISS+FTS5 hybrid, call graph, community detection, file watcher). Compression pipeline in progress.

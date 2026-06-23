@@ -14,21 +14,7 @@ from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from mnemostack.config.settings import settings
-from mnemostack.core.retrieval.ast_chunker import SUPPORTED_EXTENSIONS
-
-# File extensions we care about indexing (AST-supported + common text files)
-_INDEXABLE_EXTENSIONS = SUPPORTED_EXTENSIONS | {
-    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp",
-    ".rb", ".php", ".swift", ".kt", ".scala",
-    ".yaml", ".yml", ".toml", ".json", ".md", ".txt",
-}
-
-# Directories to always skip
-_SKIP_DIRS = frozenset({
-    ".git", "node_modules", "__pycache__", ".venv", "venv",
-    ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
-    ".next", ".nuxt", "target", ".idea", ".vscode",
-})
+from mnemostack.core.retrieval.constants import INDEXABLE_EXTENSIONS, SKIP_DIRS
 
 
 class _DebouncedHandler(FileSystemEventHandler):
@@ -62,13 +48,13 @@ class _DebouncedHandler(FileSystemEventHandler):
         to_add: list[Path] = []
         for raw in raw_paths:
             path = Path(raw)
-            if path.suffix.lower() not in _INDEXABLE_EXTENSIONS:
+            if path.suffix.lower() not in INDEXABLE_EXTENSIONS:
                 continue
             try:
                 rel_parts = path.relative_to(self._watch_root).parts
             except ValueError:
                 continue
-            if any(part in _SKIP_DIRS for part in rel_parts):
+            if any(part in SKIP_DIRS for part in rel_parts):
                 continue
             to_add.append(path)
 

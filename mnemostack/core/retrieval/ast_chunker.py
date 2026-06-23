@@ -6,6 +6,7 @@ and module-level assignments. Each chunk carries metadata for indexing and ranki
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -41,23 +42,39 @@ class Chunk:
 # --- Language registry ---
 
 _LANGUAGES: dict[str, Language] = {}
+_PARSERS: dict[str, Parser] = {}
+_parser_lock = threading.Lock()
 
 
 def _get_language(ext: str) -> Language | None:
     """Return the tree-sitter Language for a file extension, or None if unsupported."""
     if ext not in _LANGUAGES:
-        match ext:
-            case ".py":
-                _LANGUAGES[ext] = Language(tspython.language())
-            case ".js" | ".jsx" | ".mjs":
-                _LANGUAGES[ext] = Language(tsjavascript.language())
-            case ".ts":
-                _LANGUAGES[ext] = Language(tstypescript.language_typescript())
-            case ".tsx":
-                _LANGUAGES[ext] = Language(tstypescript.language_tsx())
-            case _:
-                return None
+        with _parser_lock:
+            if ext not in _LANGUAGES:
+                match ext:
+                    case ".py":
+                        _LANGUAGES[ext] = Language(tspython.language())
+                    case ".js" | ".jsx" | ".mjs":
+                        _LANGUAGES[ext] = Language(tsjavascript.language())
+                    case ".ts":
+                        _LANGUAGES[ext] = Language(tstypescript.language_typescript())
+                    case ".tsx":
+                        _LANGUAGES[ext] = Language(tstypescript.language_tsx())
+                    case _:
+                        return None
     return _LANGUAGES.get(ext)
+
+
+def _get_parser(ext: str) -> Parser | None:
+    """Return a cached Parser for a file extension, or None if unsupported."""
+    lang = _get_language(ext)
+    if lang is None:
+        return None
+    if ext not in _PARSERS:
+        with _parser_lock:
+            if ext not in _PARSERS:
+                _PARSERS[ext] = Parser(lang)
+    return _PARSERS[ext]
 
 
 SUPPORTED_EXTENSIONS = frozenset({".py", ".js", ".jsx", ".mjs", ".ts", ".tsx"})
@@ -136,18 +153,21 @@ def chunk_file(file_path: Path, source: bytes | None = None) -> list[Chunk]:
         List of Chunk objects representing meaningful code units.
     """
     ext = file_path.suffix.lower()
-    language = _get_language(ext)
-    if language is None:
+    parser = _get_parser(ext)
+    if parser is None:
         return []
 
     if source is None:
         source = file_path.read_bytes()
 
-    parser = Parser(language)
     tree = parser.parse(source)
     root = tree.root_node
 
-    mtime = file_path.stat().st_mtime if file_path.exists() else time.time()
+    # Only stat the file if we need to (source was read from disk)
+    try:
+        mtime = file_path.stat().st_mtime
+    except OSError:
+        mtime = time.time()
     fpath_str = str(file_path)
 
     func_types = _FUNCTION_TYPES.get(ext, set())
@@ -420,7 +440,10 @@ def chunk_file_fallback(file_path: Path, source: bytes | None = None) -> list[Ch
 
     text = source.decode("utf-8", errors="replace")
     lines = text.split("\n")
-    mtime = file_path.stat().st_mtime if file_path.exists() else time.time()
+    try:
+        mtime = file_path.stat().st_mtime
+    except OSError:
+        mtime = time.time()
     fpath_str = str(file_path)
 
     chunks: list[Chunk] = []

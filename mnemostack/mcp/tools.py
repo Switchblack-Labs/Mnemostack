@@ -82,15 +82,66 @@ class Confirmation(BaseModel):
 
 
 @mcp.tool()
+async def index_project(root_dir: str) -> Confirmation:
+    """Index a project directory. Chunks all files, embeds them, and populates
+    the search index and call graph. Must be called before query_codebase will
+    return results."""
+    if not root_dir:
+        raise ValueError("root_dir must not be empty")
+
+    from pathlib import Path
+
+    from mnemostack.core.retrieval.indexer import index_directory
+    from mnemostack.core.state import state
+
+    root = Path(root_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Not a directory: {root}")
+
+    count = index_directory(
+        root=root,
+        faiss_idx=state.faiss,
+        fts_idx=state.fts,
+        graph=state.graph,
+    )
+    return Confirmation(
+        success=True,
+        message=f"Indexed {count} chunks from {root}",
+    )
+
+
+@mcp.tool()
 async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
-    """Search the codebase semantically. Returns top-k relevant code chunks
-    using hybrid FTS5+FAISS retrieval with dependency expansion and recency ranking."""
+    """Search the codebase using graph-aware retrieval. Returns top-k relevant code chunks
+    using hybrid FTS5+FAISS search with call graph expansion and recency ranking."""
     if not query:
         raise ValueError("query must not be empty")
     if top_k <= 0:
         raise ValueError(f"top_k must be positive, got {top_k}")
-    # TODO: wire to core/retrieval pipeline
-    return []
+
+    from mnemostack.core.retrieval.query import query_pipeline
+    from mnemostack.core.state import state
+
+    results = query_pipeline(
+        query=query,
+        faiss_idx=state.faiss,
+        fts_idx=state.fts,
+        graph=state.graph,
+        top_k=top_k,
+    )
+
+    return [
+        CodeChunk(
+            file_path=r.file_path,
+            symbol_name=r.symbol_name,
+            code=r.code,
+            line_start=r.line_start,
+            line_end=r.line_end,
+            score=r.final_score,
+            dependencies=r.dependencies,
+        )
+        for r in results
+    ]
 
 
 @mcp.tool()
@@ -129,13 +180,14 @@ async def force_consolidate() -> ConsolidationResult:
 async def get_memory_stats() -> MemoryStats:
     """Get current memory system statistics. Returns snapshot count, index size,
     graph size, and last consolidation info."""
-    # TODO: wire to memory_store + faiss_index + call_graph
+    from mnemostack.core.state import state
+
     return MemoryStats(
         snapshot_count=0,
         total_memory_tokens=0,
-        index_chunk_count=0,
-        graph_node_count=0,
-        graph_edge_count=0,
+        index_chunk_count=state.faiss.total_chunks,
+        graph_node_count=state.graph.node_count,
+        graph_edge_count=state.graph.edge_count,
         last_consolidation_turn=None,
     )
 

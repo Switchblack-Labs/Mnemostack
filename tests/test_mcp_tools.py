@@ -221,6 +221,7 @@ async def test_update_constraint_rejects_empty():
 
 
 EXPECTED_TOOLS = {
+    "index_project",
     "query_codebase",
     "get_session_context",
     "get_full_context",

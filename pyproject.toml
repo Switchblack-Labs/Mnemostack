@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mnemostack"
 version = "0.1.0"
-description = "Persistent session memory and semantic codebase retrieval for AI coding assistants"
+description = "Graph-aware code retrieval and persistent session memory for AI coding assistants"
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0",
