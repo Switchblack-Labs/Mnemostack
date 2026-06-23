@@ -42,7 +42,7 @@ class Chunk:
 # --- Language registry ---
 
 _LANGUAGES: dict[str, Language] = {}
-_PARSERS: dict[str, Parser] = {}
+_PARSERS: dict[str, tuple[Parser, threading.Lock]] = {}
 _parser_lock = threading.Lock()
 
 
@@ -65,15 +65,19 @@ def _get_language(ext: str) -> Language | None:
     return _LANGUAGES.get(ext)
 
 
-def _get_parser(ext: str) -> Parser | None:
-    """Return a cached Parser for a file extension, or None if unsupported."""
+def _get_parser(ext: str) -> tuple[Parser, threading.Lock] | None:
+    """Return a cached (Parser, lock) pair for a file extension, or None if unsupported.
+
+    Tree-sitter Parser.parse() mutates internal state and is NOT thread-safe.
+    Each parser has a dedicated lock that must be held during parse calls.
+    """
     lang = _get_language(ext)
     if lang is None:
         return None
     if ext not in _PARSERS:
         with _parser_lock:
             if ext not in _PARSERS:
-                _PARSERS[ext] = Parser(lang)
+                _PARSERS[ext] = (Parser(lang), threading.Lock())
     return _PARSERS[ext]
 
 
@@ -153,14 +157,16 @@ def chunk_file(file_path: Path, source: bytes | None = None) -> list[Chunk]:
         List of Chunk objects representing meaningful code units.
     """
     ext = file_path.suffix.lower()
-    parser = _get_parser(ext)
-    if parser is None:
+    parser_pair = _get_parser(ext)
+    if parser_pair is None:
         return []
 
+    parser, parse_lock = parser_pair
     if source is None:
         source = file_path.read_bytes()
 
-    tree = parser.parse(source)
+    with parse_lock:
+        tree = parser.parse(source)
     root = tree.root_node
 
     # Only stat the file if we need to (source was read from disk)

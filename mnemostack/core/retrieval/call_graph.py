@@ -25,21 +25,22 @@ from mnemostack.config.settings import settings
 _graph_lock = threading.Lock()
 
 # Cached Python parser (Language + Parser are expensive to construct).
+# Parser.parse() is NOT thread-safe — _py_parse_lock must be held during parse.
 _PY_LANGUAGE: Language | None = None
 _PY_PARSER: Parser | None = None
+_parser_init_lock = threading.Lock()
+_py_parse_lock = threading.Lock()
 
 
-_parser_lock = threading.Lock()
-
-
-def _get_python_parser() -> Parser:
+def _get_python_parser() -> tuple[Parser, threading.Lock]:
+    """Return (Parser, lock). Lock must be held while calling parser.parse()."""
     global _PY_LANGUAGE, _PY_PARSER
     if _PY_PARSER is None:
-        with _parser_lock:
+        with _parser_init_lock:
             if _PY_PARSER is None:
                 _PY_LANGUAGE = Language(tspython.language())
                 _PY_PARSER = Parser(_PY_LANGUAGE)
-    return _PY_PARSER
+    return _PY_PARSER, _py_parse_lock
 
 
 class NodeType(str, Enum):
@@ -269,8 +270,9 @@ def build_graph_for_python_file(
     if source is None:
         source = file_path.read_bytes()
 
-    parser = _get_python_parser()
-    tree = parser.parse(source)
+    parser, parse_lock = _get_python_parser()
+    with parse_lock:
+        tree = parser.parse(source)
     root = tree.root_node
 
     fpath_str = str(file_path)

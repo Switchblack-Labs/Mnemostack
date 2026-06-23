@@ -44,6 +44,7 @@ def index_directory(
 ) -> int:
     """Index an entire directory from scratch.
 
+    Idempotent: removes existing data for files under `root` before re-indexing.
     Chunks all files, embeds them, populates FAISS + FTS5, and builds the call graph.
     Embedding failures on individual batches are logged and skipped, not fatal.
 
@@ -51,6 +52,13 @@ def index_directory(
         Total number of chunks indexed.
     """
     files = _collect_files(root)
+
+    # Clear existing data for files under this root (idempotent re-indexing)
+    for f in files:
+        fpath_str = str(f)
+        fts_idx.sync_removed(fpath_str)
+        faiss_idx.remove_by_file(fpath_str)
+        graph.remove_file(fpath_str)
     all_chunks: list[Chunk] = []
 
     for f in files:

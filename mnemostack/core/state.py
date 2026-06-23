@@ -65,20 +65,21 @@ class _State:
 
     def start_watching(self, root: Path) -> None:
         """Start the file watcher for incremental re-indexing."""
-        self.stop_watching()
+        with _init_lock:
+            self.stop_watching()
 
-        from mnemostack.core.retrieval.indexer import reindex_file
+            from mnemostack.core.retrieval.indexer import reindex_file
 
-        def _on_files_changed(paths: set[Path]) -> None:
-            for path in paths:
-                try:
-                    reindex_file(path, self.faiss, self.fts, self.graph)
-                except Exception:
-                    log.exception("Failed to re-index %s", path)
+            def _on_files_changed(paths: set[Path]) -> None:
+                for path in paths:
+                    try:
+                        reindex_file(path, self.faiss, self.fts, self.graph)
+                    except Exception:
+                        log.exception("Failed to re-index %s", path)
 
-        self._watcher = FileWatcher(root, _on_files_changed)
-        self._watcher.start()
-        log.info("File watcher started for %s", root)
+            self._watcher = FileWatcher(root, _on_files_changed)
+            self._watcher.start()
+            log.info("File watcher started for %s", root)
 
     def stop_watching(self) -> None:
         """Stop the file watcher if running."""
