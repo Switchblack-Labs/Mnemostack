@@ -104,9 +104,10 @@ async def index_project(root_dir: str) -> Confirmation:
         fts_idx=state.fts,
         graph=state.graph,
     )
+    state.start_watching(root)
     return Confirmation(
         success=True,
-        message=f"Indexed {count} chunks from {root}",
+        message=f"Indexed {count} chunks from {root} (file watcher active)",
     )
 
 
