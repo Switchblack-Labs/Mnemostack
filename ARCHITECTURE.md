@@ -383,7 +383,6 @@ core/
     faiss_index.py          — FAISS HNSW index management (build, query, incremental update)
     fts_index.py            — FTS5 keyword index (BM25 + Porter stemming)
     ranker.py               — RRF fusion + recency-weighted ranking
-    communities.py          — Leiden community detection on call graph
     file_watcher.py         — file save event listener for incremental updates
   compression/
     local_extractor.py      — keyword, AST diff, constraint extraction (runs every turn)

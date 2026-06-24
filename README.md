@@ -8,8 +8,7 @@ Tree-sitter AST parsing builds a lightweight call graph (functions, classes, imp
 2-hop BFS expansion on the graph retrieves entire dependency chains, not isolated snippets
 Hybrid search: FAISS HNSW (semantic similarity) + FTS5/BM25 (exact identifier matching) fused with Reciprocal Rank Fusion
 Recency-weighted ranking ensures recently edited code outranks stale matches
-Leiden community detection clusters related code automatically
 Persistent compressed session memory survives across sessions
 Runs locally as an MCP server — plugs into Claude Code, Cursor, or any MCP-compatible tool
 
-Status: Retrieval pipeline built and tested (AST chunker, FAISS+FTS5 hybrid, call graph, community detection, file watcher). Compression pipeline in progress.
+Status: Retrieval pipeline built and tested (AST chunker, FAISS+FTS5 hybrid, call graph, file watcher). Compression pipeline in progress.

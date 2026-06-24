@@ -52,41 +52,26 @@ def reciprocal_rank_fusion(
     RRF score for document d = sum(1 / (k + rank_i(d))) across all ranked lists.
     No score normalization needed — only rank positions matter.
     """
-    # Build a map of chunk_id -> combined RRF score + metadata
+    # Build a map of chunk_id -> combined RRF score + metadata.
+    # FAISS first, then FTS — first occurrence of a chunk_id wins for metadata.
     scores: dict[int, float] = {}
     metadata: dict[int, dict] = {}
 
-    # FAISS results (ranked by similarity — index = rank)
-    for rank, r in enumerate(faiss_results, start=1):
-        scores[r.chunk_id] = scores.get(r.chunk_id, 0.0) + 1.0 / (_RRF_K + rank)
-        if r.chunk_id not in metadata:
-            metadata[r.chunk_id] = {
-                "file_path": r.file_path,
-                "symbol_name": r.symbol_name,
-                "code": r.code,
-                "line_start": r.line_start,
-                "line_end": r.line_end,
-                "chunk_type": r.chunk_type,
-                "qualified_name": r.qualified_name,
-                "last_modified": r.last_modified,
-                "dependencies": r.dependencies,
-            }
-
-    # FTS5 results (ranked by BM25 — index = rank)
-    for rank, r in enumerate(fts_results, start=1):
-        scores[r.chunk_id] = scores.get(r.chunk_id, 0.0) + 1.0 / (_RRF_K + rank)
-        if r.chunk_id not in metadata:
-            metadata[r.chunk_id] = {
-                "file_path": r.file_path,
-                "symbol_name": r.symbol_name,
-                "code": r.code,
-                "line_start": r.line_start,
-                "line_end": r.line_end,
-                "chunk_type": r.chunk_type,
-                "qualified_name": r.qualified_name,
-                "last_modified": r.last_modified,
-                "dependencies": r.dependencies,
-            }
+    for results_list in (faiss_results, fts_results):
+        for rank, r in enumerate(results_list, start=1):
+            scores[r.chunk_id] = scores.get(r.chunk_id, 0.0) + 1.0 / (_RRF_K + rank)
+            if r.chunk_id not in metadata:
+                metadata[r.chunk_id] = {
+                    "file_path": r.file_path,
+                    "symbol_name": r.symbol_name,
+                    "code": r.code,
+                    "line_start": r.line_start,
+                    "line_end": r.line_end,
+                    "chunk_type": r.chunk_type,
+                    "qualified_name": r.qualified_name,
+                    "last_modified": r.last_modified,
+                    "dependencies": r.dependencies,
+                }
 
     # Sort by RRF score descending, take top_k
     sorted_ids = sorted(scores.keys(), key=lambda cid: scores[cid], reverse=True)[:top_k]
@@ -94,20 +79,21 @@ def reciprocal_rank_fusion(
     results: list[RankedResult] = []
     for cid in sorted_ids:
         meta = metadata[cid]
-        results.append(RankedResult(
-            chunk_id=cid,
-            file_path=meta["file_path"],
-            symbol_name=meta["symbol_name"],
-            code=meta["code"],
-            line_start=meta["line_start"],
-            line_end=meta["line_end"],
-            chunk_type=meta["chunk_type"],
-            qualified_name=meta["qualified_name"],
-            last_modified=meta["last_modified"],
-            dependencies=meta["dependencies"],
-            final_score=scores[cid],
-            semantic_score=scores[cid],  # Will be overwritten in rerank
-        ))
+        results.append(
+            RankedResult(
+                chunk_id=cid,
+                file_path=meta["file_path"],
+                symbol_name=meta["symbol_name"],
+                code=meta["code"],
+                line_start=meta["line_start"],
+                line_end=meta["line_end"],
+                chunk_type=meta["chunk_type"],
+                qualified_name=meta["qualified_name"],
+                last_modified=meta["last_modified"],
+                dependencies=meta["dependencies"],
+                final_score=scores[cid],
+            )
+        )
 
     return results
 

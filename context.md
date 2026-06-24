@@ -67,12 +67,12 @@ Code is a graph, not a bag of text. Any retrieval system that ignores call-graph
 **Consolidation output schema:**
 ```json
 {
-  "decisions": [{"text": "...", "communities": ["..."], "impact_score": 0.72}],
-  "constraints": [{"text": "...", "communities": ["..."], "impact_score": 0.45}],
+  "decisions": [{"text": "...", "impact_score": 0.72}],
+  "constraints": [{"text": "...", "impact_score": 0.45}],
   "open_questions": [...],
   "architecture_state": {...},
   "resolved": [...],
-  "file_relationships": [{"from": "...", "to": "...", "community": "..."}]
+  "file_relationships": [{"from": "...", "to": "..."}]
 }
 ```
 
@@ -81,17 +81,10 @@ Code is a graph, not a bag of text. Any retrieval system that ignores call-graph
 - `memory_token_budget`: max consolidated memory size (default 3000 tokens)
 - `consolidation_model`: configurable via litellm (Ollama local for dev, frontier for prod)
 
-### Tier 1 + Tier 2 Integration: Community-Tagged Snapshots
-
-- Leiden community detection on the lightweight graph clusters related code (e.g., `auth-core`, `db-layer`)
-- Compression output is tagged with community IDs
-- `get_session_context(query)` filters snapshots to only return communities relevant to the current query
-- Reduces ~3000 token flat dump to ~400-800 targeted tokens per query
-
 ### Graph-Aware Snapshot Merging
 
 - Before LLM merge, annotate each decision with structural importance score from graph
-- `importance = f(caller_count, cross_community_callers, test_coverage)`
+- `importance = f(caller_count, test_coverage)`
 - LLM instruction: drop decisions below 0.15, always keep above 0.60
 - Prevents silent loss of load-bearing architectural decisions during repeated merges
 
@@ -105,7 +98,6 @@ query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]
 
 get_session_context() -> SessionMemory
     Latest consolidated memory + local extractions since last consolidation
-    Community-filtered when query context is available
 
 get_full_context(query: str) -> CombinedContext
     Convenience: session memory + relevant code chunks in one call
@@ -137,10 +129,9 @@ Mnemostack/
         fts_index.py           -- FTS5 keyword index + RRF fusion
         ranker.py              -- recency-weighted semantic + dependency ranking
         file_watcher.py        -- watchdog file save listener, incremental updates
-        communities.py         -- Leiden community detection on graph
       compression/
         local_extractor.py     -- keyword, AST diff, constraint extraction (every turn)
-        llm_consolidator.py    -- LLM compression via litellm, community-tagged output
+        llm_consolidator.py    -- LLM compression via litellm
         memory_store.py        -- versioned snapshot stack, graph-aware lazy merge
       router.py                -- model-agnostic compression model selection (litellm)
     mcp/
@@ -156,7 +147,7 @@ Mnemostack/
       defaults.yaml            -- default configuration values
   store/                       -- runtime data (outside package, gitignored)
     snapshots/                 -- snap_001.json, snap_002.json ...
-    graph.db                   -- SQLite: nodes, edges, communities
+    graph.db                   -- SQLite: nodes, edges
     index.faiss                -- FAISS HNSW index
     chunks.db                  -- SQLite: chunk metadata
     relevance.db               -- SQLite: query/chunk feedback log
@@ -175,7 +166,6 @@ Mnemostack/
 | Keyword search | SQLite FTS5 | Built into SQLite, zero new deps, BM25 scoring |
 | Rank fusion | Reciprocal Rank Fusion | Parameter-light, no score normalization needed |
 | Graph storage | SQLite | Already a dependency, no new process |
-| Community detection | Leiden algorithm | Model-agnostic, runs locally on graph |
 | LLM routing | litellm | Unified interface across all providers |
 | File watching | watchdog | Python standard for filesystem events |
 | MCP transport | stdio (default) | Microsecond overhead, no network stack |
@@ -195,7 +185,7 @@ Mnemostack/
 
 ```
 WITHOUT Mnemo (turn 200):  ~50,000-200,000 tokens/turn (growing linearly)
-WITH Mnemo (turn 200):     ~2,400-3,800 tokens/turn (flat, community-filtered)
+WITH Mnemo (turn 200):     ~2,400-3,800 tokens/turn (flat)
 Consolidation cost:        ~$0.001 per cycle (negligible)
 ```
 
@@ -215,20 +205,19 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 3. `core/retrieval/fts_index.py` — FTS5 index (BM25 + Porter stemming)
 4. `core/retrieval/ranker.py` — RRF fusion + recency ranking + query intent boost
 5. `core/retrieval/call_graph.py` — lightweight graph + 2-hop BFS (Python extraction)
-6. `core/retrieval/communities.py` — Leiden community detection
-7. `core/retrieval/file_watcher.py` — debounced incremental index updates
+6. `core/retrieval/file_watcher.py` — debounced incremental index updates
 
 ### Next: Compression Pipeline
-8. `core/router.py` — litellm model router
-9. `core/compression/local_extractor.py` — per-turn extraction
-10. `core/compression/llm_consolidator.py` — LLM consolidation
-11. `core/compression/memory_store.py` — snapshot stack + graph-aware merge
+7. `core/router.py` — litellm model router
+8. `core/compression/local_extractor.py` — per-turn extraction
+9. `core/compression/llm_consolidator.py` — LLM consolidation
+10. `core/compression/memory_store.py` — snapshot stack + graph-aware merge
 
 ### Then: Wire + Ship
-12. Wire real implementations into MCP tool stubs
-13. `daemon/lifecycle.py` — daemon management
-14. End-to-end integration tests
-15. Multi-client testing (Claude Code, Cursor, etc.)
+11. Wire real implementations into MCP tool stubs
+12. `daemon/lifecycle.py` — daemon management
+13. End-to-end integration tests
+14. Multi-client testing (Claude Code, Cursor, etc.)
 
 ## Known Traps
 
@@ -243,9 +232,8 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 
 1. **Live call graph** — tree-sitter AST → dependency graph (functions, classes, imports) → 2-hop BFS expansion retrieves entire dependency chains, not isolated snippets
 2. **Hybrid graph + search** — FAISS semantic + FTS5 exact identifiers fused via RRF, then expanded through the call graph
-3. **Leiden community detection** — automatically clusters related code; enables community-tagged session snapshots
-4. **Graph-aware snapshot merging** — structural importance scoring from the call graph prevents silent info loss during memory compression
-5. **Model-agnostic** — works with any MCP client and any LLM provider
+3. **Graph-aware snapshot merging** — structural importance scoring from the call graph prevents silent info loss during memory compression
+4. **Model-agnostic** — works with any MCP client and any LLM provider
 
 ## Explicitly Out of Scope
 
@@ -253,7 +241,7 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 - Risk-scored change detection via git diff
 - Full 7-edge structural graph (3 edges sufficient for retrieval)
 - VS Code extension
-- Architecture overview / community listing as MCP tools
+- Architecture overview as an MCP tool
 
 ---
 
