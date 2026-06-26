@@ -90,14 +90,20 @@ Code is a graph, not a bag of text. Any retrieval system that ignores call-graph
 
 ---
 
-## MCP Tools (6)
+## MCP Tools (8)
 
 ```
+index_project(root_dir: str) -> Confirmation
+    Chunk + embed a project, populate index/graph, start the file watcher
+
 query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]
     Hybrid FTS5+FAISS search, RRF fusion, 2-hop BFS expansion, recency ranking
 
+record_turn(text: str) -> Confirmation
+    Append a raw conversation turn; auto-consolidates every consolidation_interval turns
+
 get_session_context() -> SessionMemory
-    Latest consolidated memory + local extractions since last consolidation
+    Latest consolidated memory + pinned constraints + pending turn count
 
 get_full_context(query: str) -> CombinedContext
     Convenience: session memory + relevant code chunks in one call
@@ -109,7 +115,7 @@ get_memory_stats() -> Stats
     Memory size, index size, last consolidation time
 
 update_constraint(constraint: str) -> Confirmation
-    Manually inject a constraint into session memory
+    Manually pin a constraint into session memory (survives every consolidation)
 ```
 
 ---
@@ -207,17 +213,56 @@ Consolidation cost:        ~$0.001 per cycle (negligible)
 5. `core/retrieval/call_graph.py` — lightweight graph + 2-hop BFS (Python extraction)
 6. `core/retrieval/file_watcher.py` — debounced incremental index updates
 
-### Next: Compression Pipeline
-7. `core/router.py` — litellm model router
-8. `core/compression/local_extractor.py` — per-turn extraction
-9. `core/compression/llm_consolidator.py` — LLM consolidation
-10. `core/compression/memory_store.py` — snapshot stack + graph-aware merge
+### DONE: Tier 2 — Session Memory (this commit)
 
-### Then: Wire + Ship
-11. Wire real implementations into MCP tool stubs
-12. `daemon/lifecycle.py` — daemon management
-13. End-to-end integration tests
-14. Multi-client testing (Claude Code, Cursor, etc.)
+The compression tier is built and wired end to end. The loop now closes:
+`record_turn` → accumulate pending → auto-consolidate at the interval → snapshot →
+`get_session_context` / `get_full_context`. All three memory MCP stubs are gone.
+
+- `core/compression/memory_store.py` — single `memory.json` store (pending turns,
+  pinned facts, latest snapshot). Atomic writes, corrupt-file recovery, locked
+  readers, fields clamped to the SessionMemory schema.
+- `core/compression/llm_consolidator.py` — one `litellm.completion()` call; carries
+  the prior snapshot forward, always preserves pinned facts, evicts oldest pending
+  to fit `memory_token_budget`, robust JSON parse. Never re-compresses.
+- `mcp/tools.py` — wired `get_session_context`, `get_memory_stats`, `update_constraint`,
+  `force_consolidate`; added `record_turn` with auto-consolidation.
+- `core/state.py` — added lazy `MemoryStore` singleton + teardown.
+- `mcp/server.py` — `run()` now tears down state on shutdown (watcher started lazily
+  by `index_project`, so there is nothing to start at boot — only to close).
+- 118 tests pass, ruff clean. Each step was agent-reviewed and findings fixed
+  (data-loss-safe writes, concurrent-turn eviction, parse-error contract,
+  consolidation back-off, teardown not masking errors).
+
+**Key decision — turn ingestion (Step 5): explicit `record_turn` tool, NOT a
+per-turn local extractor.** `record_turn` is a dumb pipe — it stores raw turn text
+and fires one LLM consolidation per `consolidation_interval` (default 25). The
+originally-designed Layer 2A "local extraction every turn" (`local_extractor.py`)
+was deliberately NOT built: it would run an LLM on *every* turn (25× the calls) just
+to shrink the consolidation prompt — an optimization for a budget problem we haven't
+measured. Ship the pipe; add per-turn extraction only if raw turns blow the 3k budget.
+
+### Caveats (this commit)
+- **No real LLM call is exercised.** Every `completion()` is stubbed in tests/smokes.
+  The litellm wiring mirrors the working `embed.py` but a live Ollama consolidation
+  is unrun.
+- **The daemon was never booted as a process.** `mcp.run` blocks on stdio; teardown
+  is tested via mock, not a real server start/stop with an attached MCP client.
+- `total_memory_tokens` and the budget check use a `len(json)/4` token estimate, not
+  a real tokenizer.
+
+### Descoped / not in this commit (vs the Tier 2 design above)
+- `core/compression/local_extractor.py` (Layer 2A per-turn extraction) — deferred.
+- `core/router.py` — not needed; litellm is called directly with the configured model.
+- **Graph-aware snapshot merging** (impact scoring, drop <0.15 / keep >0.60) — not built.
+- **Versioned snapshot stack + lazy two-oldest merge** — replaced by a single latest
+  snapshot that is never re-compressed (evict + pin instead). `consolidation_output`
+  schema in this commit omits `impact_score` and `file_relationships`.
+- `adapters/` (REST + SDK) and the security layer — post-MVP.
+
+### Then: Ship
+- Live end-to-end run against Ollama + a real MCP client (Claude Code, Cursor).
+- Multi-client testing.
 
 ## Known Traps
 

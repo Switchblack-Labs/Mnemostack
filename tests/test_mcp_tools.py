@@ -178,10 +178,27 @@ async def test_query_codebase_rejects_nonpositive_top_k():
         await mcp_tools.query_codebase("x", top_k=-3)
 
 
-async def test_get_session_context_returns_empty_stub():
+@pytest.fixture(autouse=True)
+def _isolate_memory(tmp_path, monkeypatch):
+    """Point the shared state singleton at a fresh memory store per test so
+    constraint writes don't pollute ./store or bleed across tests."""
+    from mnemostack.core.compression.memory_store import MemoryStore
+    from mnemostack.core.state import state
+
+    monkeypatch.setattr(state, "_memory", MemoryStore(store_dir=tmp_path))
+
+
+async def test_get_session_context_empty_on_fresh_store():
     s = await mcp_tools.get_session_context()
     assert isinstance(s, SessionMemory)
     assert s.decisions == [] and s.constraints == []
+    assert s.local_extractions_pending == 0
+
+
+async def test_update_constraint_shows_up_in_session_context():
+    await mcp_tools.update_constraint("we use postgres")
+    s = await mcp_tools.get_session_context()
+    assert {"kind": "constraint", "text": "we use postgres"} in s.constraints
 
 
 async def test_get_full_context_composes():
@@ -195,10 +212,35 @@ async def test_get_full_context_rejects_empty_query():
         await mcp_tools.get_full_context("")
 
 
-async def test_force_consolidate_stub():
+async def test_force_consolidate_noop_when_nothing_pending():
     r = await mcp_tools.force_consolidate()
-    assert r.success is False
+    assert r.success is True
     assert r.turns_consolidated == 0
+
+
+async def test_force_consolidate_consolidates_pending(monkeypatch):
+    import types
+
+    from mnemostack.core.compression import llm_consolidator
+    from mnemostack.core.state import state
+
+    canned = '{"decisions": [{"d": "use postgres"}], "open_questions": []}'
+    monkeypatch.setattr(
+        llm_consolidator,
+        "completion",
+        lambda **kw: types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=canned))]
+        ),
+    )
+    state.memory.add_turn("we picked postgres")
+    state.memory.add_turn("dropped redis")
+
+    r = await mcp_tools.force_consolidate()
+    assert r.success is True
+    assert r.turns_consolidated == 2
+    assert state.memory.pending_count() == 0
+    s = await mcp_tools.get_session_context()
+    assert s.decisions == [{"d": "use postgres"}]
 
 
 async def test_get_memory_stats_stub():
@@ -206,15 +248,63 @@ async def test_get_memory_stats_stub():
     assert r.snapshot_count == 0
 
 
-async def test_update_constraint_stub():
+async def test_update_constraint_confirms():
     r = await mcp_tools.update_constraint("we use postgres")
     assert isinstance(r, Confirmation)
-    assert r.success is False
+    assert r.success is True
 
 
 async def test_update_constraint_rejects_empty():
     with pytest.raises(ValueError, match="must not be empty"):
         await mcp_tools.update_constraint("")
+
+
+async def test_record_turn_rejects_empty():
+    with pytest.raises(ValueError, match="must not be empty"):
+        await mcp_tools.record_turn("")
+
+
+def _set_interval(monkeypatch, n):
+    """settings is frozen; swap the module singleton for a copy with a new interval."""
+    import mnemostack.config.settings as cfg
+
+    new = cfg.settings.model_copy(
+        update={
+            "compression": cfg.settings.compression.model_copy(update={"consolidation_interval": n})
+        }
+    )
+    monkeypatch.setattr(cfg, "settings", new)
+
+
+async def test_record_turn_accumulates_without_consolidating(monkeypatch):
+    from mnemostack.core.state import state
+
+    _set_interval(monkeypatch, 3)
+    r = await mcp_tools.record_turn("a")
+    assert r.success is True and "consolidated" not in r.message
+    await mcp_tools.record_turn("b")
+    assert state.memory.pending_count() == 2  # below threshold, no LLM call
+
+
+async def test_record_turn_auto_consolidates_at_threshold(monkeypatch):
+    import types
+
+    from mnemostack.core.compression import llm_consolidator
+    from mnemostack.core.state import state
+
+    _set_interval(monkeypatch, 2)
+    canned = '{"decisions": [{"d": "x"}]}'
+    monkeypatch.setattr(
+        llm_consolidator,
+        "completion",
+        lambda **kw: types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=canned))]
+        ),
+    )
+    await mcp_tools.record_turn("a")
+    r = await mcp_tools.record_turn("b")  # hits threshold -> fires consolidation
+    assert "consolidated" in r.message
+    assert state.memory.pending_count() == 0
 
 
 # --- MCP protocol-level dispatch ---
@@ -228,6 +318,7 @@ EXPECTED_TOOLS = {
     "force_consolidate",
     "get_memory_stats",
     "update_constraint",
+    "record_turn",
 }
 
 
@@ -255,7 +346,7 @@ async def test_mcp_dispatch_get_full_context():
 
 async def test_mcp_dispatch_force_consolidate():
     _, structured = await mcp.call_tool("force_consolidate", {})
-    assert structured["success"] is False
+    assert structured["success"] is True
 
 
 async def test_mcp_dispatch_get_memory_stats():
@@ -264,10 +355,8 @@ async def test_mcp_dispatch_get_memory_stats():
 
 
 async def test_mcp_dispatch_update_constraint():
-    _, structured = await mcp.call_tool(
-        "update_constraint", {"constraint": "use postgres"}
-    )
-    assert structured["success"] is False
+    _, structured = await mcp.call_tool("update_constraint", {"constraint": "use postgres"})
+    assert structured["success"] is True
 
 
 async def test_mcp_dispatch_query_codebase_empty_query_errors():
@@ -288,3 +377,24 @@ async def test_mcp_dispatch_update_constraint_empty_errors():
 async def test_mcp_dispatch_unknown_tool_errors():
     with pytest.raises(Exception):
         await mcp.call_tool("does_not_exist", {})
+
+
+# --- daemon lifecycle ---
+
+
+def test_run_closes_state_even_if_server_raises(monkeypatch):
+    from mnemostack.core.state import state
+    from mnemostack.mcp import server
+
+    closed = []
+    monkeypatch.setattr(state, "close", lambda: closed.append(True))
+
+    # Patch the class method (not the instance) — an instance setattr would leak a
+    # shadowing attribute past monkeypatch teardown and break other run() tests.
+    def _boom(self, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(type(server.mcp), "run", _boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        server.run()
+    assert closed == [True]  # finally ran teardown

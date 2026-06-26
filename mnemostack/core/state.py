@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from mnemostack.config.settings import settings
+from mnemostack.core.compression.memory_store import MemoryStore
 from mnemostack.core.retrieval.call_graph import CallGraph
 from mnemostack.core.retrieval.faiss_index import FaissIndex, create_chunks_db
 from mnemostack.core.retrieval.file_watcher import FileWatcher
@@ -29,6 +30,7 @@ class _State:
         self._fts: FTSIndex | None = None
         self._graph: CallGraph | None = None
         self._watcher: FileWatcher | None = None
+        self._memory: MemoryStore | None = None
 
     @property
     def chunks_db(self) -> sqlite3.Connection:
@@ -38,6 +40,14 @@ class _State:
                 if self._chunks_db is None:
                     self._chunks_db = create_chunks_db(settings.store.base_dir)
         return self._chunks_db
+
+    @property
+    def memory(self) -> MemoryStore:
+        if self._memory is None:
+            with _init_lock:
+                if self._memory is None:
+                    self._memory = MemoryStore()
+        return self._memory
 
     @property
     def faiss(self) -> FaissIndex:
@@ -105,6 +115,8 @@ class _State:
         if self._chunks_db is not None:
             self._chunks_db.close()
             self._chunks_db = None
+        # MemoryStore is save-on-write with no open handles; just drop the ref.
+        self._memory = None
 
 
 state = _State()

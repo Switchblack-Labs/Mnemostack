@@ -12,6 +12,8 @@ store/index.faiss
 store/chunks.db
 store/graph.db
 store/relevance.db
+store/memory.json
+store/memory.json.corrupt
 store/snapshots/*.json
 
 # IDE

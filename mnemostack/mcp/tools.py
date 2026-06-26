@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mnemostack.mcp.server import mcp
+
+log = logging.getLogger(__name__)
 
 # extra="forbid" on all wire models so a server-side typo (e.g. emitting a misspelled
 # field) raises in tests instead of silently dropping data on the way to the client.
@@ -149,8 +153,9 @@ async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
 async def get_session_context() -> SessionMemory:
     """Get the current compressed session memory. Returns the latest LLM consolidation
     combined with any local extractions since the last consolidation."""
-    # TODO: wire to core/compression/memory_store
-    return SessionMemory()
+    from mnemostack.core.state import state
+
+    return SessionMemory(**state.memory.session_view())
 
 
 @mcp.tool()
@@ -168,12 +173,15 @@ async def get_full_context(query: str) -> CombinedContext:
 async def force_consolidate() -> ConsolidationResult:
     """Manually trigger an LLM consolidation cycle. Useful when major
     architectural decisions have been made and you want them persisted immediately."""
-    # TODO: wire to core/compression/llm_consolidator
+    from mnemostack.core.compression.llm_consolidator import consolidate
+    from mnemostack.core.state import state
+
+    out = consolidate(state.memory)
     return ConsolidationResult(
-        success=False,
-        turns_consolidated=0,
-        snapshot_id="",
-        token_count=0,
+        success=out.success,
+        turns_consolidated=out.turns_consolidated,
+        snapshot_id=out.snapshot_id,
+        token_count=out.token_count,
     )
 
 
@@ -183,13 +191,14 @@ async def get_memory_stats() -> MemoryStats:
     graph size, and last consolidation info."""
     from mnemostack.core.state import state
 
+    mem = state.memory.stats()
     return MemoryStats(
-        snapshot_count=0,
-        total_memory_tokens=0,
+        snapshot_count=mem["snapshot_count"],
+        total_memory_tokens=mem["total_memory_tokens"],
         index_chunk_count=state.faiss.total_chunks,
         graph_node_count=state.graph.node_count,
         graph_edge_count=state.graph.edge_count,
-        last_consolidation_turn=None,
+        last_consolidation_turn=mem["last_consolidation_turn"],
     )
 
 
@@ -199,8 +208,42 @@ async def update_constraint(constraint: str) -> Confirmation:
     so you can explicitly tell the system to remember something."""
     if not constraint:
         raise ValueError("constraint must not be empty")
-    # TODO: wire to core/compression/memory_store
+    from mnemostack.core.state import state
+
+    state.memory.add_pinned("constraint", constraint)
     return Confirmation(
-        success=False,
-        message="Not implemented yet",
+        success=True,
+        message="Constraint pinned to session memory.",
     )
+
+
+@mcp.tool()
+async def record_turn(text: str) -> Confirmation:
+    """Record a raw conversation turn into session memory. Once enough turns
+    accumulate (compression.consolidation_interval), an LLM consolidation fires
+    automatically to compress them into the session snapshot."""
+    if not text:
+        raise ValueError("text must not be empty")
+    from mnemostack.config.settings import settings
+    from mnemostack.core.compression.llm_consolidator import ConsolidationError, consolidate
+    from mnemostack.core.state import state
+
+    count = state.memory.add_turn(text)
+    # Fire every `interval`-th pending turn (not just `>= interval`): if a
+    # consolidation fails, pending stays high, and `>=` would re-fire the blocking
+    # LLM call on every single turn. `% interval` backs off to one retry per interval.
+    interval = settings.compression.consolidation_interval
+    if state.memory.pending_count() % interval != 0:
+        return Confirmation(success=True, message=f"Recorded turn {count}.")
+
+    # ponytail: synchronous LLM call blocks the event loop; offload to a thread if
+    # it stalls clients. The turn is already persisted, so a failed consolidation
+    # just leaves pending intact to retry on the next trigger — never lose data.
+    try:
+        consolidate(state.memory)
+        return Confirmation(success=True, message=f"Recorded turn {count}; consolidated.")
+    except ConsolidationError as exc:
+        log.warning("Auto-consolidation failed at turn %d: %s", count, exc)
+        return Confirmation(
+            success=True, message=f"Recorded turn {count}; consolidation deferred ({exc})."
+        )
