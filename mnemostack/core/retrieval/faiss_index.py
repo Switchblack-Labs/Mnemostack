@@ -35,9 +35,19 @@ class SearchResult:
     position via RRF, not raw score values, so the L2 convention is safe.
     """
 
-    __slots__ = ("chunk_id", "score", "file_path", "symbol_name", "code",
-                 "line_start", "line_end", "chunk_type", "qualified_name",
-                 "last_modified", "dependencies")
+    __slots__ = (
+        "chunk_id",
+        "score",
+        "file_path",
+        "symbol_name",
+        "code",
+        "line_start",
+        "line_end",
+        "chunk_type",
+        "qualified_name",
+        "last_modified",
+        "dependencies",
+    )
 
     def __init__(
         self,
@@ -302,19 +312,21 @@ class FaissIndex:
                 if row is None:
                     continue
 
-                results.append(SearchResult(
-                    chunk_id=int(chunk_id),
-                    score=float(dist),
-                    file_path=row[0],
-                    symbol_name=row[1],
-                    code=row[2],
-                    line_start=row[3],
-                    line_end=row[4],
-                    chunk_type=row[5],
-                    qualified_name=row[6],
-                    last_modified=row[7],
-                    dependencies=json.loads(row[8]),
-                ))
+                results.append(
+                    SearchResult(
+                        chunk_id=int(chunk_id),
+                        score=float(dist),
+                        file_path=row[0],
+                        symbol_name=row[1],
+                        code=row[2],
+                        line_start=row[3],
+                        line_end=row[4],
+                        chunk_type=row[5],
+                        qualified_name=row[6],
+                        last_modified=row[7],
+                        dependencies=json.loads(row[8]),
+                    )
+                )
         return results
 
     def get_chunk_ids_by_qnames(self, qualified_names: list[str]) -> dict[str, int]:
@@ -356,6 +368,36 @@ class FaissIndex:
             last_modified=row[7],
             dependencies=json.loads(row[8]),
         )
+
+    def get_chunks_by_ids(self, chunk_ids: list[int]) -> dict[int, SearchResult]:
+        """Batch-fetch chunk metadata by ID. Returns {id: SearchResult} for found rows."""
+        if not chunk_ids:
+            return {}
+        ids = [int(c) for c in chunk_ids]
+        with _db_lock:
+            placeholders = ",".join("?" * len(ids))
+            rows = self.db.execute(
+                f"""SELECT id, file_path, symbol_name, code, line_start, line_end,
+                          chunk_type, qualified_name, last_modified, dependencies
+                   FROM chunks WHERE id IN ({placeholders})""",
+                ids,
+            ).fetchall()
+        return {
+            row[0]: SearchResult(
+                chunk_id=row[0],
+                score=0.0,
+                file_path=row[1],
+                symbol_name=row[2],
+                code=row[3],
+                line_start=row[4],
+                line_end=row[5],
+                chunk_type=row[6],
+                qualified_name=row[7],
+                last_modified=row[8],
+                dependencies=json.loads(row[9]),
+            )
+            for row in rows
+        }
 
     def get_chunks_by_file(self, file_path: str) -> list[SearchResult]:
         """Get all chunks for a file path."""
