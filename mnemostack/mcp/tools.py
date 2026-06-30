@@ -117,8 +117,11 @@ async def index_project(root_dir: str) -> Confirmation:
 
 @mcp.tool()
 async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
-    """Search the codebase using graph-aware retrieval. Returns top-k relevant code chunks
-    using hybrid FTS5+FAISS search with call graph expansion and recency ranking."""
+    """Search the codebase using graph-aware retrieval. Returns the top-k relevant code
+    chunks (hybrid FTS5+FAISS search, RRF fusion, recency ranking) plus the call-graph
+    dependency chain of those results, so callees/callers a top hit relies on are
+    included even when they don't match the query directly. Each chunk's `dependencies`
+    lists the qualified names it calls or imports."""
     if not query:
         raise ValueError("query must not be empty")
     if top_k <= 0:

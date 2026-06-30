@@ -539,3 +539,131 @@ class TestIndexer:
 
         faiss_idx.close()
         fts_idx.close()
+
+
+# --- Query Pipeline: graph expansion ---
+
+
+class TestQueryPipelineExpansion:
+    def test_pure_call_graph_dependency_surfaces(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """A callee with no semantic/keyword overlap with the query must still
+        appear in results purely because a top hit depends on it, and the seed's
+        ``dependencies`` field must name that callee."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        # alphaqxz_entrypoint matches the query by name and CALLS zetawvu_helper,
+        # which shares no token with the query. Enough noise functions (>fetch_k)
+        # ensure zeta is pushed out of the FAISS candidate window, so it can only
+        # reach the result set through call-graph expansion.
+        lines = [
+            "def alphaqxz_entrypoint():",
+            "    zetawvu_helper()",
+            "",
+            "def zetawvu_helper():",
+            "    return 1",
+            "",
+        ]
+        for i in range(16):
+            lines += [f"def noise_{i}():", f"    return {i}", ""]
+        project = tmp_store / "project"
+        project.mkdir()
+        (project / "mod.py").write_text("\n".join(lines))
+
+        mod = str(project / "mod.py")
+        alpha_q = f"{mod}::alphaqxz_entrypoint"
+        zeta_q = f"{mod}::zetawvu_helper"
+
+        # Deterministic embeddings: query == alpha (distance 0, FAISS rank 1),
+        # noise just off-axis (tiny distance), zeta orthogonal (farthest).
+        def fake_embed(texts):
+            vecs = []
+            for j, text in enumerate(texts):
+                if "def zetawvu_helper" in text:
+                    vecs.append([0.0, 1.0, 0.0, 0.0])
+                elif "def alphaqxz_entrypoint" in text:
+                    vecs.append([1.0, 0.0, 0.0, 0.0])
+                else:
+                    vecs.append([1.0, 0.001 * (j + 1), 0.0, 0.0])
+            return np.array(vecs, dtype=np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=project, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+
+        monkeypatch.setattr(
+            query_mod,
+            "embed_query",
+            lambda q, model=None: np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        )
+
+        results = query_pipeline(
+            query="alphaqxz_entrypoint",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+
+        qnames = {r.qualified_name for r in results}
+        assert alpha_q in qnames, "direct hit missing"
+        assert zeta_q in qnames, "call-graph dependency was not merged into results"
+
+        alpha = next(r for r in results if r.qualified_name == alpha_q)
+        assert zeta_q in alpha.dependencies, "dependency chain not surfaced on seed"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+    def test_dependency_chain_recorded_without_real_chunk(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """Neighbors that don't resolve to indexed chunks (e.g. phantom import
+        targets) must not appear in ``dependencies`` — only resolvable ones do."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        project = tmp_store / "project"
+        project.mkdir()
+        # solo_fn imports an external module (phantom node, no chunk) and has no
+        # in-repo callees, so its dependency chain should be empty.
+        (project / "solo.py").write_text(
+            "import os\n\ndef solofn_unique():\n    return os.getpid()\n"
+        )
+
+        def fake_embed(texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=project, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        monkeypatch.setattr(
+            query_mod,
+            "embed_query",
+            lambda q, model=None: np.ones(4, dtype=np.float32),
+        )
+
+        results = query_pipeline(
+            query="solofn_unique",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+        solo = next(
+            r for r in results if r.qualified_name.endswith("::solofn_unique")
+        )
+        assert solo.dependencies == [], "unresolvable neighbors leaked into chain"
+
+        faiss_idx.close()
+        fts_idx.close()

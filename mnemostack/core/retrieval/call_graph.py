@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections import deque
+from collections.abc import Iterable
 from enum import Enum
 from pathlib import Path
 
@@ -164,6 +165,7 @@ class CallGraph:
         qualified_name: str,
         hops: int = 2,
         direction: str = "outgoing",
+        edge_types: Iterable[EdgeType] | None = None,
     ) -> list[str]:
         """BFS expansion from a node. Returns qualified names of reachable nodes.
 
@@ -171,10 +173,17 @@ class CallGraph:
             qualified_name: Starting node.
             hops: Maximum BFS depth (default 2).
             direction: 'outgoing', 'incoming', or 'both'.
+            edge_types: If given, only traverse edges of these types. Defaults to
+                all edge types. Restrict to CALLS/IMPORTS_FROM for true dependency
+                chains — traversing CONTAINS would reach every sibling symbol via
+                the shared file node.
 
         Returns:
             List of qualified names reachable within `hops` (excludes start node).
         """
+        edge_type_values = (
+            [e.value for e in edge_types] if edge_types is not None else None
+        )
         with _graph_lock:
             start = self.db.execute(
                 "SELECT id FROM nodes WHERE qualified_name = ?", (qualified_name,)
@@ -191,7 +200,7 @@ class CallGraph:
                 if depth >= hops:
                     continue
 
-                neighbors = self._get_adjacent_unlocked(node_id, direction)
+                neighbors = self._get_adjacent_unlocked(node_id, direction, edge_type_values)
                 for neighbor_id in neighbors:
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
@@ -208,17 +217,30 @@ class CallGraph:
             ).fetchall()
             return [row[0] for row in rows]
 
-    def _get_adjacent_unlocked(self, node_id: int, direction: str) -> list[int]:
+    def _get_adjacent_unlocked(
+        self,
+        node_id: int,
+        direction: str,
+        edge_type_values: list[str] | None = None,
+    ) -> list[int]:
         """Get adjacent node IDs. Must be called while holding _graph_lock."""
         ids: list[int] = []
+        type_clause = ""
+        type_params: list[str] = []
+        if edge_type_values:
+            placeholders = ",".join("?" * len(edge_type_values))
+            type_clause = f" AND edge_type IN ({placeholders})"
+            type_params = edge_type_values
         if direction in ("outgoing", "both"):
             rows = self.db.execute(
-                "SELECT target_id FROM edges WHERE source_id = ?", (node_id,)
+                f"SELECT target_id FROM edges WHERE source_id = ?{type_clause}",
+                (node_id, *type_params),
             ).fetchall()
             ids.extend(row[0] for row in rows)
         if direction in ("incoming", "both"):
             rows = self.db.execute(
-                "SELECT source_id FROM edges WHERE target_id = ?", (node_id,)
+                f"SELECT source_id FROM edges WHERE target_id = ?{type_clause}",
+                (node_id, *type_params),
             ).fetchall()
             ids.extend(row[0] for row in rows)
         return ids
