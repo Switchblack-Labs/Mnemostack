@@ -62,7 +62,7 @@ class ImportRecord:
 
 
 def _text(node: Node, source: bytes) -> str:
-    return source[node.start_byte:node.end_byte].decode()
+    return source[node.start_byte : node.end_byte].decode()
 
 
 def _relative_module(rel_node: Node, source: bytes) -> tuple[int, str]:
@@ -137,9 +137,7 @@ def extract_imports(source: bytes) -> list[ImportRecord]:
                 level, module = 0, _text(module_node, source)
 
             for local_name, symbol, is_wildcard in _imported_names(stmt, source):
-                records.append(
-                    ImportRecord(local_name, module, symbol, level, is_wildcard)
-                )
+                records.append(ImportRecord(local_name, module, symbol, level, is_wildcard))
     return records
 
 
@@ -165,42 +163,61 @@ def resolve_module_file(
     """Resolve a dotted module to a real .py file on disk, or None if not found.
 
     Absolute imports (level 0) resolve under ``import_root`` (derived from the
-    importing file's package if not supplied). Relative imports resolve against
-    the importing file's package, climbing ``level - 1`` directories first.
-    Tries ``pkg/mod.py`` then ``pkg/mod/__init__.py``.
+    importing file's package if not supplied), then — for PEP 420 namespace
+    packages with no ``__init__.py`` to anchor the root — fall back to climbing
+    the importing file's ancestors until the module resolves. Relative imports
+    resolve against the importing file's package, climbing ``level - 1``
+    directories first. Tries ``pkg/mod.py`` then ``pkg/mod/__init__.py``.
     """
     if level > 0:
         base = importing_file.parent
         for _ in range(level - 1):
             base = base.parent
+        bases: list[Path] = [base]
     else:
-        base = import_root if import_root is not None else find_import_root(importing_file)
+        primary = import_root if import_root is not None else find_import_root(importing_file)
+        # Try the package-derived root first; then walk up the importing file's
+        # ancestors so namespace packages (no __init__.py marking the root) still
+        # resolve. ponytail: the ancestor walk could match a same-named module at
+        # the wrong depth; root-first ordering makes that rare. Add a real
+        # project-root boundary if it ever misfires.
+        bases = [primary, *importing_file.parents]
 
     parts = module.split(".") if module else []
 
     if parts:
-        candidate = base.joinpath(*parts).with_suffix(".py")
-        if candidate.is_file():
-            return candidate
-        pkg_init = base.joinpath(*parts) / "__init__.py"
-        if pkg_init.is_file():
-            return pkg_init
+        seen: set[Path] = set()
+        for base in bases:
+            if base in seen:
+                continue
+            seen.add(base)
+            candidate = base.joinpath(*parts).with_suffix(".py")
+            if candidate.is_file():
+                return candidate
+            pkg_init = base.joinpath(*parts) / "__init__.py"
+            if pkg_init.is_file():
+                return pkg_init
         return None
 
     # No module after the dots (e.g. `from . import x`): the base package itself.
-    pkg_init = base / "__init__.py"
+    pkg_init = bases[0] / "__init__.py"
     return pkg_init if pkg_init.is_file() else None
 
 
-def build_import_table(source: bytes, importing_file: Path) -> dict[str, ImportRecord]:
-    """Map each bound local name in a file to the import that introduced it.
+def import_table_from_records(records: list[ImportRecord]) -> dict[str, ImportRecord]:
+    """Map each bound local name to the import that introduced it.
 
     Later bindings win, mirroring Python's namespace. Wildcard imports are
     excluded (their bound names aren't known statically).
     """
     table: dict[str, ImportRecord] = {}
-    for rec in extract_imports(source):
+    for rec in records:
         if rec.is_wildcard or not rec.local_name:
             continue
         table[rec.local_name] = rec
     return table
+
+
+def build_import_table(source: bytes, importing_file: Path) -> dict[str, ImportRecord]:
+    """Parse a source buffer and return its bound-name -> import mapping."""
+    return import_table_from_records(extract_imports(source))

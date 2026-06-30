@@ -82,8 +82,7 @@ def query_pipeline(
     # Surface the resolvable dependency chain on each seed result.
     for result in fused[:top_k]:
         result.dependencies = sorted(
-            qn for qn in neighbors_by_qname.get(result.qualified_name, [])
-            if qn in qname_to_id
+            qn for qn in neighbors_by_qname.get(result.qualified_name, []) if qn in qname_to_id
         )
 
     # Merge dependency chunks that hybrid search didn't already surface into the
@@ -91,10 +90,10 @@ def query_pipeline(
     # newly-injected dependency carries no hybrid score (final_score=0.0); the
     # dependency bonus + recency in rerank position it below direct hits.
     candidates_by_id: dict[int, RankedResult] = {r.chunk_id: r for r in fused}
-    for cid in dependency_ids:
-        if cid in candidates_by_id:
-            continue
-        chunk = faiss_idx.get_chunk_by_id(cid)
+    missing_ids = [cid for cid in dependency_ids if cid not in candidates_by_id]
+    fetched_chunks = faiss_idx.get_chunks_by_ids(missing_ids)
+    for cid in missing_ids:
+        chunk = fetched_chunks.get(cid)
         if chunk is None:
             continue
         injected = RankedResult(
@@ -120,6 +119,50 @@ def query_pipeline(
     primary = reranked[:top_k]
     selected_ids = {r.chunk_id for r in primary}
     output = list(primary)
+
+    # A dependency injected above can itself be promoted into the primaries; its
+    # `dependencies` was never computed (only seeds were). Fill in the chain for
+    # any primary we didn't already seed so its callees can still be surfaced.
+    unseeded = [r for r in primary if r.qualified_name not in neighbors_by_qname]
+    if unseeded:
+        new_qnames: list[str] = []
+        for result in unseeded:
+            nb = graph.get_neighbors(
+                result.qualified_name,
+                hops=hops,
+                direction="both",
+                edge_types=(EdgeType.CALLS, EdgeType.IMPORTS_FROM),
+            )
+            neighbors_by_qname[result.qualified_name] = nb
+            new_qnames.extend(qn for qn in nb if qn not in qname_to_id)
+        if new_qnames:
+            qname_to_id.update(faiss_idx.get_chunk_ids_by_qnames(new_qnames))
+        for result in unseeded:
+            result.dependencies = sorted(
+                qn for qn in neighbors_by_qname[result.qualified_name] if qn in qname_to_id
+            )
+        # Make the newly-resolved dependency chunks available to the expansion
+        # loop below so a promoted primary's chain can surface like a seed's.
+        new_dep_ids = [
+            qname_to_id[qn]
+            for result in unseeded
+            for qn in result.dependencies
+            if qname_to_id[qn] not in candidates_by_id
+        ]
+        for cid, chunk in faiss_idx.get_chunks_by_ids(new_dep_ids).items():
+            candidates_by_id[cid] = RankedResult(
+                chunk_id=chunk.chunk_id,
+                file_path=chunk.file_path,
+                symbol_name=chunk.symbol_name,
+                code=chunk.code,
+                line_start=chunk.line_start,
+                line_end=chunk.line_end,
+                chunk_type=chunk.chunk_type,
+                qualified_name=chunk.qualified_name,
+                last_modified=chunk.last_modified,
+                dependencies=[],
+                final_score=0.0,
+            )
 
     # Guarantee the dependency chain of the primary results is present, even if a
     # pure dependency couldn't out-score direct hits for a top_k slot. Append in

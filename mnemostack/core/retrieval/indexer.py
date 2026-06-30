@@ -116,6 +116,12 @@ def reindex_file(
         Number of new chunks indexed for this file.
     """
     fpath_str = str(file_path)
+    is_python = file_path.suffix.lower() == ".py"
+
+    # remove_file drops edges where this file's nodes are source OR target, so the
+    # incoming cross-file edges from other files are lost too. Capture those
+    # importers now and re-link them after this file's nodes are rebuilt.
+    importers = graph.importer_files(fpath_str) if is_python else []
 
     # Remove old data (FTS first, then FAISS — correct ordering)
     fts_idx.sync_removed(fpath_str)
@@ -142,8 +148,17 @@ def reindex_file(
     fts_idx.sync_added(chunk_ids)
 
     # Rebuild call graph for Python files
-    if file_path.suffix.lower() == ".py":
+    if is_python:
         build_graph_for_python_file(file_path, graph=graph)
+        # Re-link importers so their edges into this file are re-established.
+        # ponytail: only re-links files that already had an edge here; a file that
+        # imports this one for the first time (e.g. this file is newly created)
+        # won't be linked until it is itself reindexed. Add a reverse-import index
+        # or periodic full reindex if that case starts to matter.
+        for importer in importers:
+            importer_path = Path(importer)
+            if importer_path.exists():
+                link_python_file_imports(importer_path, graph=graph)
 
     faiss_idx.save()
     return len(chunks)

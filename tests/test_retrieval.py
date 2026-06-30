@@ -8,6 +8,7 @@ full query pipeline (with mocked embeddings).
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -112,11 +113,7 @@ class TestASTChunker:
     def test_chunk_python_class_with_methods(self, tmp_path):
         f = tmp_path / "cls.py"
         f.write_text(
-            "class Foo:\n"
-            "    def bar(self):\n"
-            "        pass\n"
-            "    def baz(self):\n"
-            "        pass\n"
+            "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        pass\n"
         )
         chunks = chunk_file(f)
         names = [c.symbol_name for c in chunks]
@@ -352,13 +349,7 @@ class TestCallGraph:
 
     def test_build_graph_for_python_file(self, tmp_path, graph):
         f = tmp_path / "sample.py"
-        f.write_text(
-            "import os\n\n"
-            "def caller():\n"
-            "    callee()\n\n"
-            "def callee():\n"
-            "    pass\n"
-        )
+        f.write_text("import os\n\ndef caller():\n    callee()\n\ndef callee():\n    pass\n")
         build_graph_for_python_file(f, graph=graph)
 
         assert graph.node_count >= 3  # file + 2 functions
@@ -445,9 +436,103 @@ class TestCrossFileLinking:
         )
         assert imports == []
 
-    def test_query_surfaces_cross_file_dependency(
-        self, tmp_store, shared_db, graph, monkeypatch
-    ):
+    def test_from_import_submodule_call_links(self, tmp_path, graph):
+        # `from pkg import sub; sub.func()` must resolve to pkg/sub.py::func.
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        sub = pkg / "sub.py"
+        main = tmp_path / "main.py"
+        sub.write_text("def work():\n    return 1\n")
+        main.write_text("from pkg import sub\n\ndef run():\n    sub.work()\n")
+        self._build(graph, [sub, main])
+
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{sub}::work" in calls, "submodule call not linked across files"
+        # IMPORTS_FROM should point at the real submodule file, not just __init__.
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(sub) in imports
+
+    def test_local_def_shadows_import_no_spurious_edge(self, tmp_path, graph):
+        # A local def with the same name as an import must not produce a cross-file
+        # CALLS edge — Python binds the local definition.
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        util = proj / "util.py"
+        main = proj / "main.py"
+        util.write_text("def helper():\n    return 1\n")
+        main.write_text(
+            "from util import helper\n\ndef helper():\n    return 2\n\ndef run():\n    helper()\n"
+        )
+        self._build(graph, [util, main])
+
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{main}::helper" in calls, "local call edge missing"
+        assert f"{util}::helper" not in calls, "spurious cross-file edge to shadowed import"
+
+    def test_namespace_package_resolves_without_init(self, tmp_path, graph):
+        # PEP 420: no __init__.py anywhere. Absolute import must still resolve via
+        # the ancestor-walk fallback in resolve_module_file.
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        util = pkg / "util.py"
+        main = pkg / "main.py"
+        util.write_text("def helper():\n    return 1\n")
+        main.write_text("from pkg.util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [util, main])
+
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{util}::helper" in calls, "namespace-package import did not resolve"
+
+    def test_reindex_preserves_incoming_edges(self, tmp_store, shared_db, graph, monkeypatch):
+        # Editing the imported file must not permanently drop the importer's edge
+        # into it. reindex_file should re-link importers.
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        from mnemostack.core.retrieval.indexer import index_directory, reindex_file
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+        proj = tmp_store / "proj"
+        proj.mkdir(parents=True)
+        crypto = proj / "crypto.py"
+        auth = proj / "auth.py"
+        crypto.write_text("def hashpw(pw):\n    return pw[::-1]\n")
+        auth.write_text("from crypto import hashpw\n\ndef login(pw):\n    return hashpw(pw)\n")
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=proj, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+
+        # Edge auth.login -> crypto.hashpw exists initially.
+        assert f"{crypto}::hashpw" in graph.get_neighbors(
+            f"{auth}::login", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+
+        # Edit crypto.py and reindex only it.
+        crypto.write_text("def hashpw(pw):\n    return pw[::-1] + '!'\n")
+        reindex_file(crypto, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+
+        # The incoming edge from auth must be back, not silently lost.
+        calls = graph.get_neighbors(
+            f"{auth}::login", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{crypto}::hashpw" in calls, "incoming edge dropped after reindex of imported file"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+    def test_query_surfaces_cross_file_dependency(self, tmp_store, shared_db, graph, monkeypatch):
         """End to end: a function in another file, reachable only through an
         imported call, surfaces in query results."""
         import mnemostack.core.retrieval.indexer as indexer_mod
@@ -460,9 +545,7 @@ class TestCrossFileLinking:
 
         proj = tmp_store / "proj"
         proj.mkdir(parents=True)
-        (proj / "crypto.py").write_text(
-            "def zzhashpw_unique(pw):\n    return pw[::-1]\n"
-        )
+        (proj / "crypto.py").write_text("def zzhashpw_unique(pw):\n    return pw[::-1]\n")
         (proj / "auth.py").write_text(
             "from crypto import zzhashpw_unique\n\n"
             "def authenticate_user(pw):\n"
@@ -502,6 +585,7 @@ class TestCrossFileLinking:
 class TestRanker:
     def _make_faiss_result(self, chunk_id, score=0.5, symbol="foo", qname="a.py::foo"):
         from mnemostack.core.retrieval.faiss_index import SearchResult
+
         return SearchResult(
             chunk_id=chunk_id,
             score=score,
@@ -518,6 +602,7 @@ class TestRanker:
 
     def _make_fts_result(self, chunk_id, bm25=1.0, symbol="foo", qname="a.py::foo"):
         from mnemostack.core.retrieval.fts_index import FTSResult
+
         return FTSResult(
             chunk_id=chunk_id,
             bm25_score=bm25,
@@ -571,16 +656,30 @@ class TestRanker:
     def test_query_intent_boost_pascal_class(self):
         results = [
             RankedResult(
-                chunk_id=1, file_path="a.py", symbol_name="AuthService",
-                code="class AuthService: ...", line_start=1, line_end=1,
-                chunk_type="class", qualified_name="a.py::AuthService",
-                last_modified=time.time(), dependencies=[], final_score=1.0,
+                chunk_id=1,
+                file_path="a.py",
+                symbol_name="AuthService",
+                code="class AuthService: ...",
+                line_start=1,
+                line_end=1,
+                chunk_type="class",
+                qualified_name="a.py::AuthService",
+                last_modified=time.time(),
+                dependencies=[],
+                final_score=1.0,
             ),
             RankedResult(
-                chunk_id=2, file_path="a.py", symbol_name="auth_service",
-                code="def auth_service(): ...", line_start=5, line_end=5,
-                chunk_type="function", qualified_name="a.py::auth_service",
-                last_modified=time.time(), dependencies=[], final_score=1.0,
+                chunk_id=2,
+                file_path="a.py",
+                symbol_name="auth_service",
+                code="def auth_service(): ...",
+                line_start=5,
+                line_end=5,
+                chunk_type="function",
+                qualified_name="a.py::auth_service",
+                last_modified=time.time(),
+                dependencies=[],
+                final_score=1.0,
             ),
         ]
         apply_query_intent_boost(results, "AuthService")
@@ -589,10 +688,17 @@ class TestRanker:
     def test_query_intent_boost_snake_function(self):
         results = [
             RankedResult(
-                chunk_id=1, file_path="a.py", symbol_name="validate_input",
-                code="def validate_input(): ...", line_start=1, line_end=1,
-                chunk_type="function", qualified_name="a.py::validate_input",
-                last_modified=time.time(), dependencies=[], final_score=1.0,
+                chunk_id=1,
+                file_path="a.py",
+                symbol_name="validate_input",
+                code="def validate_input(): ...",
+                line_start=1,
+                line_end=1,
+                chunk_type="function",
+                qualified_name="a.py::validate_input",
+                last_modified=time.time(),
+                dependencies=[],
+                final_score=1.0,
             ),
         ]
         apply_query_intent_boost(results, "validate_input")
@@ -601,16 +707,30 @@ class TestRanker:
     def test_rerank_dependency_bonus(self):
         results = [
             RankedResult(
-                chunk_id=1, file_path="a.py", symbol_name="foo",
-                code="...", line_start=1, line_end=1,
-                chunk_type="function", qualified_name="a.py::foo",
-                last_modified=time.time(), dependencies=[], final_score=0.01,
+                chunk_id=1,
+                file_path="a.py",
+                symbol_name="foo",
+                code="...",
+                line_start=1,
+                line_end=1,
+                chunk_type="function",
+                qualified_name="a.py::foo",
+                last_modified=time.time(),
+                dependencies=[],
+                final_score=0.01,
             ),
             RankedResult(
-                chunk_id=2, file_path="a.py", symbol_name="bar",
-                code="...", line_start=2, line_end=2,
-                chunk_type="function", qualified_name="a.py::bar",
-                last_modified=time.time(), dependencies=[], final_score=0.01,
+                chunk_id=2,
+                file_path="a.py",
+                symbol_name="bar",
+                code="...",
+                line_start=2,
+                line_end=2,
+                chunk_type="function",
+                qualified_name="a.py::bar",
+                last_modified=time.time(),
+                dependencies=[],
+                final_score=0.01,
             ),
         ]
         # chunk 2 is a dependency
@@ -636,6 +756,7 @@ class TestIndexer:
 
         # Mock embed_texts to avoid real API calls
         import mnemostack.core.retrieval.indexer as indexer_mod
+
         original_embed = indexer_mod.embed_texts
 
         def fake_embed(texts):
@@ -671,9 +792,7 @@ class TestIndexer:
 
 
 class TestQueryPipelineExpansion:
-    def test_pure_call_graph_dependency_surfaces(
-        self, tmp_store, shared_db, graph, monkeypatch
-    ):
+    def test_pure_call_graph_dependency_surfaces(self, tmp_store, shared_db, graph, monkeypatch):
         """A callee with no semantic/keyword overlap with the query must still
         appear in results purely because a top hit depends on it, and the seed's
         ``dependencies`` field must name that callee."""
@@ -786,10 +905,81 @@ class TestQueryPipelineExpansion:
             graph=graph,
             top_k=5,
         )
-        solo = next(
-            r for r in results if r.qualified_name.endswith("::solofn_unique")
-        )
+        solo = next(r for r in results if r.qualified_name.endswith("::solofn_unique"))
         assert solo.dependencies == [], "unresolvable neighbors leaked into chain"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+    def test_promoted_dependency_gets_its_own_chain(self, tmp_store, shared_db, graph, monkeypatch):
+        """A dependency that lands in the primaries (not a seed) must still have its
+        own dependency chain computed and surfaced, instead of dead-ending with an
+        empty ``dependencies``."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        # entry CALLS mid; mid CALLS leaf. With 1-hop expansion, the entry seed
+        # reaches mid but NOT leaf — leaf can only appear via mid's own chain.
+        lines = [
+            "def alphaqxz_entry():",
+            "    midwvu_node()",
+            "",
+            "def midwvu_node():",
+            "    leafzyx_target()",
+            "",
+            "def leafzyx_target():",
+            "    return 1",
+            "",
+        ]
+        for i in range(16):
+            lines += [f"def noise_{i}():", f"    return {i}", ""]
+        project = tmp_store / "project"
+        project.mkdir()
+        (project / "mod.py").write_text("\n".join(lines))
+        mod = str(project / "mod.py")
+        mid_q = f"{mod}::midwvu_node"
+        leaf_q = f"{mod}::leafzyx_target"
+
+        monkeypatch.setattr(
+            query_mod, "settings", SimpleNamespace(retrieval=SimpleNamespace(dependency_hops=1))
+        )
+
+        def fake_embed(texts):
+            return np.ones((len(texts), 4), dtype=np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=project, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        monkeypatch.setattr(
+            query_mod, "embed_query", lambda q, model=None: np.ones(4, dtype=np.float32)
+        )
+
+        # Force mid to the top of the reranked order so it becomes a primary even
+        # though it was not a seed (it is not a query match).
+        real_rerank = query_mod.rerank
+
+        def rerank_mid_first(results, **kwargs):
+            ranked = real_rerank(results, **kwargs)
+            ranked.sort(key=lambda r: r.qualified_name != mid_q)
+            return ranked
+
+        monkeypatch.setattr(query_mod, "rerank", rerank_mid_first)
+
+        results = query_pipeline(
+            query="alphaqxz_entry",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+        mid = next((r for r in results if r.qualified_name == mid_q), None)
+        assert mid is not None and mid is results[0], "mid was not promoted to primary"
+        assert leaf_q in mid.dependencies, "promoted dependency lost its own chain"
+        assert leaf_q in {r.qualified_name for r in results}, "leaf not surfaced"
 
         faiss_idx.close()
         fts_idx.close()
