@@ -370,6 +370,132 @@ class TestCallGraph:
         assert f"{f}::callee" in neighbors
 
 
+class TestCrossFileLinking:
+    """Cross-file CALLS / IMPORTS_FROM edges via real import resolution."""
+
+    def _build(self, graph, files):
+        from mnemostack.core.retrieval.call_graph import (
+            build_nodes_for_python_file,
+            link_python_file_imports,
+        )
+
+        for f in files:
+            build_nodes_for_python_file(f, graph=graph)
+        for f in files:
+            link_python_file_imports(f, graph=graph)
+
+    def test_from_import_call_links_across_files(self, tmp_path, graph):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        util = proj / "util.py"
+        main = proj / "main.py"
+        util.write_text("def helper():\n    return 1\n")
+        main.write_text("from util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [util, main])
+
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{util}::helper" in calls, "cross-file CALLS edge not created"
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(util) in imports, "cross-file IMPORTS_FROM edge not created"
+
+    def test_aliased_module_call_links_across_files(self, tmp_path, graph):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        util = proj / "util.py"
+        main = proj / "main.py"
+        util.write_text("def helper():\n    return 1\n")
+        main.write_text("import util as u\n\ndef run():\n    u.helper()\n")
+        self._build(graph, [util, main])
+
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{util}::helper" in calls
+
+    def test_relative_import_links_within_package(self, tmp_path, graph):
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        a = pkg / "a.py"
+        b = pkg / "b.py"
+        a.write_text("def fa():\n    return 1\n")
+        b.write_text("from .a import fa\n\ndef fb():\n    fa()\n")
+        self._build(graph, [a, b])
+
+        calls = graph.get_neighbors(
+            f"{b}::fb", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{a}::fa" in calls
+
+    def test_external_import_creates_no_edge(self, tmp_path, graph):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        main = proj / "main.py"
+        main.write_text("import os\n\ndef run():\n    os.getpid()\n")
+        self._build(graph, [main])
+
+        # Nothing off-disk resolves, so no IMPORTS_FROM / CALLS edge is invented.
+        imports = graph.get_neighbors(
+            str(main), hops=2, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert imports == []
+
+    def test_query_surfaces_cross_file_dependency(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """End to end: a function in another file, reachable only through an
+        imported call, surfaces in query results."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        proj = tmp_store / "proj"
+        proj.mkdir(parents=True)
+        (proj / "crypto.py").write_text(
+            "def zzhashpw_unique(pw):\n    return pw[::-1]\n"
+        )
+        (proj / "auth.py").write_text(
+            "from crypto import zzhashpw_unique\n\n"
+            "def authenticate_user(pw):\n"
+            "    return zzhashpw_unique(pw)\n"
+        )
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=proj, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        monkeypatch.setattr(
+            query_mod, "embed_query", lambda q, model=None: np.zeros(4, dtype=np.float32)
+        )
+
+        results = query_pipeline(
+            query="authenticate_user",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+        qnames = {r.qualified_name for r in results}
+        auth_q = f"{proj / 'auth.py'}::authenticate_user"
+        crypto_q = f"{proj / 'crypto.py'}::zzhashpw_unique"
+        assert auth_q in qnames
+        assert crypto_q in qnames, "cross-file dependency did not surface in retrieval"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+
 # --- Ranker Tests ---
 
 

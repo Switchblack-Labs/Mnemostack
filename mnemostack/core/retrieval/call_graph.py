@@ -20,6 +20,12 @@ import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser
 
 from mnemostack.config.settings import settings
+from mnemostack.core.retrieval.import_resolver import (
+    ImportRecord,
+    extract_imports,
+    find_import_root,
+    resolve_module_file,
+)
 
 # Thread lock for CallGraph SQLite operations (graph.db is accessed from
 # the file watcher's background thread via reindex_file -> remove_file).
@@ -274,18 +280,17 @@ class CallGraph:
 # --- Python-specific call/import extraction ---
 
 
-def build_graph_for_python_file(
+def build_nodes_for_python_file(
     file_path: Path,
     source: bytes | None = None,
     graph: CallGraph | None = None,
 ) -> CallGraph:
-    """Parse a Python file and populate the call graph with nodes and edges.
+    """Add a file's nodes and intra-file edges.
 
-    Extracts:
-    - File node
-    - Function/class CONTAINS edges from file
-    - IMPORTS_FROM edges between files
-    - CALLS edges between functions (within-file call sites)
+    Populates the File node, Function/Class/method nodes, CONTAINS edges, and
+    same-file CALLS edges. Cross-file edges (imports, calls into other files) are
+    added separately by link_python_file_imports, which must run only after every
+    file's nodes exist — otherwise add_edge no-ops on a missing target.
     """
     if graph is None:
         graph = CallGraph()
@@ -331,13 +336,85 @@ def build_graph_for_python_file(
                         graph.add_node(mqname, NodeType.FUNCTION, fpath_str)
                         graph.add_edge(class_qname, mqname, EdgeType.CONTAINS)
 
-        elif child.type in ("import_statement", "import_from_statement"):
-            _extract_python_import(child, source, fpath_str, graph)
-
-    # Extract call sites (function calls within the file)
+    # Same-file call sites (targets are defined in this file, so they exist now).
     _extract_python_calls(root, source, fpath_str, defined_functions, defined_classes, graph)
 
     graph.commit()
+    return graph
+
+
+def link_python_file_imports(
+    file_path: Path,
+    source: bytes | None = None,
+    graph: CallGraph | None = None,
+    import_root: Path | None = None,
+) -> CallGraph:
+    """Add cross-file edges for a Python file.
+
+    Resolves each import to the real file on disk and adds an IMPORTS_FROM edge to
+    it, and links calls to imported functions (``from m import f; f()`` and
+    ``import m; m.f()``) with CALLS edges to the real definition. Only edges whose
+    target node already exists are created, so run this after every file's nodes
+    have been built. Imports that don't resolve to an indexed file are skipped —
+    the graph stays quiet about code it can't see rather than guessing.
+    """
+    if graph is None:
+        graph = CallGraph()
+    if source is None:
+        source = file_path.read_bytes()
+    if import_root is None:
+        import_root = find_import_root(file_path)
+
+    parser, parse_lock = _get_python_parser()
+    with parse_lock:
+        tree = parser.parse(source)
+    root = tree.root_node
+    fpath_str = str(file_path)
+
+    records = extract_imports(source)
+    import_table: dict[str, ImportRecord] = {}
+    for rec in records:
+        if rec.is_wildcard or not rec.local_name:
+            continue
+        import_table[rec.local_name] = rec
+
+    # IMPORTS_FROM edges to resolved, indexed files.
+    linked_targets: set[str] = set()
+    for rec in records:
+        resolved = resolve_module_file(file_path, rec.module, rec.level, import_root)
+        if resolved is None:
+            continue
+        target = str(resolved)
+        if target in linked_targets:
+            continue
+        linked_targets.add(target)
+        if graph.has_node(target):
+            graph.add_edge(fpath_str, target, EdgeType.IMPORTS_FROM)
+
+    # Cross-file CALLS edges to imported functions.
+    _extract_cross_file_calls(root, source, fpath_str, import_table, graph, file_path, import_root)
+
+    graph.commit()
+    return graph
+
+
+def build_graph_for_python_file(
+    file_path: Path,
+    source: bytes | None = None,
+    graph: CallGraph | None = None,
+) -> CallGraph:
+    """Full single-file build: nodes + same-file calls + cross-file links.
+
+    Convenience wrapper used for incremental re-indexing of one file. Cross-file
+    edges resolve against whatever nodes already exist in the graph; targets in
+    not-yet-indexed files are simply skipped.
+    """
+    if graph is None:
+        graph = CallGraph()
+    if source is None:
+        source = file_path.read_bytes()
+    build_nodes_for_python_file(file_path, source, graph)
+    link_python_file_imports(file_path, source, graph)
     return graph
 
 
@@ -348,22 +425,61 @@ def _py_node_name(node: Node, source: bytes) -> str:
     return "<anonymous>"
 
 
-def _extract_python_import(
-    node: Node, source: bytes, file_path: str, graph: CallGraph
+def _extract_cross_file_calls(
+    root: Node,
+    source: bytes,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    graph: CallGraph,
+    importing_path: Path,
+    import_root: Path,
 ) -> None:
-    """Extract IMPORTS_FROM edges from import statements.
+    """Add CALLS edges for calls to imported functions, resolved to real files.
 
-    Note: creates phantom FILE nodes for imported modules using a guessed path
-    (dotted.module -> dotted/module.py). These may not correspond to real files
-    on disk — they exist solely to enable dependency traversal in the graph.
+    Handles the two statically-resolvable shapes:
+      from mod import func; func()   -> caller CALLS resolved(mod)::func
+      import mod [as m];  m.func()    -> caller CALLS resolved(mod)::func
+    Instance/method calls and other dynamic dispatch are left alone.
     """
-    if node.type == "import_from_statement":
-        module_node = node.child_by_field_name("module_name")
-        if module_node:
-            module_name = source[module_node.start_byte:module_node.end_byte].decode()
-            module_path = module_name.replace(".", "/") + ".py"
-            graph.add_node(module_path, NodeType.FILE, module_path)
-            graph.add_edge(file_path, module_path, EdgeType.IMPORTS_FROM)
+    for call in _find_nodes_by_type(root, "call"):
+        func_node = call.child_by_field_name("function")
+        if not func_node:
+            continue
+        call_name = source[func_node.start_byte:func_node.end_byte].decode()
+        caller = _find_enclosing_function(call, source, file_path)
+        if not caller:
+            continue
+
+        if "." not in call_name:
+            # from mod import func; func()
+            rec = import_table.get(call_name)
+            if rec is None or rec.symbol is None:
+                continue
+            resolved = resolve_module_file(importing_path, rec.module, rec.level, import_root)
+            if resolved is None:
+                continue
+            target = f"{resolved}::{rec.symbol}"
+            if graph.has_node(target):
+                graph.add_edge(caller, target, EdgeType.CALLS)
+        else:
+            # import mod [as m]; m.func() — match the longest imported module prefix.
+            parts = call_name.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                rec = import_table.get(".".join(parts[:i]))
+                if rec is None or rec.symbol is not None:
+                    continue
+                remaining = parts[i:]
+                if len(remaining) != 1:
+                    break  # only module.function is resolvable to a definition
+                resolved = resolve_module_file(
+                    importing_path, rec.module, rec.level, import_root
+                )
+                if resolved is None:
+                    break
+                target = f"{resolved}::{remaining[0]}"
+                if graph.has_node(target):
+                    graph.add_edge(caller, target, EdgeType.CALLS)
+                break
 
 
 def _extract_python_calls(

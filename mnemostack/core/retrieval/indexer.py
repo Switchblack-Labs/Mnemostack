@@ -10,7 +10,12 @@ import logging
 from pathlib import Path
 
 from mnemostack.core.retrieval.ast_chunker import Chunk, chunk_file_auto
-from mnemostack.core.retrieval.call_graph import CallGraph, build_graph_for_python_file
+from mnemostack.core.retrieval.call_graph import (
+    CallGraph,
+    build_graph_for_python_file,
+    build_nodes_for_python_file,
+    link_python_file_imports,
+)
 from mnemostack.core.retrieval.constants import INDEXABLE_EXTENSIONS, SKIP_DIRS
 from mnemostack.core.retrieval.embed import EmbeddingError, embed_texts
 from mnemostack.core.retrieval.faiss_index import FaissIndex
@@ -60,14 +65,21 @@ def index_directory(
         faiss_idx.remove_by_file(fpath_str)
         graph.remove_file(fpath_str)
     all_chunks: list[Chunk] = []
+    py_files: list[Path] = []
 
     for f in files:
         chunks = chunk_file_auto(f)
         all_chunks.extend(chunks)
-
-        # Build call graph for Python files
         if f.suffix.lower() == ".py":
-            build_graph_for_python_file(f, graph=graph)
+            py_files.append(f)
+
+    # Build the call graph in two passes so cross-file edges can resolve: first
+    # every file's nodes, then the import/cross-file-call edges between them
+    # (add_edge no-ops if a target node doesn't exist yet).
+    for f in py_files:
+        build_nodes_for_python_file(f, graph=graph)
+    for f in py_files:
+        link_python_file_imports(f, graph=graph)
 
     if not all_chunks:
         return 0
