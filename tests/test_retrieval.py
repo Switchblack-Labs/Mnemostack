@@ -7,9 +7,7 @@ full query pipeline (with mocked embeddings).
 
 from __future__ import annotations
 
-import tempfile
 import time
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -36,7 +34,6 @@ from mnemostack.core.retrieval.ranker import (
     reciprocal_rank_fusion,
     rerank,
 )
-
 
 # --- Fixtures ---
 
