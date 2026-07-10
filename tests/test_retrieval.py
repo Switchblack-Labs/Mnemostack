@@ -983,3 +983,66 @@ class TestQueryPipelineExpansion:
 
         faiss_idx.close()
         fts_idx.close()
+
+
+class TestRepoTagging:
+    """Nodes carry a repo tag; an edge whose endpoints differ crosses repos."""
+
+    def _build(self, graph, files):
+        from mnemostack.core.retrieval.call_graph import (
+            build_nodes_for_python_file,
+            link_python_file_imports,
+        )
+
+        for f in files:
+            build_nodes_for_python_file(f, graph=graph)
+        for f in files:
+            link_python_file_imports(f, graph=graph)
+
+    def test_cross_repo_edge_endpoints_have_distinct_repos(self, tmp_path, graph):
+        # Two sibling repos on disk under a shared parent, one depending on the
+        # other. .git marks each repo root, so _repo_of tags them apart.
+        repo_a = tmp_path / "service"
+        repo_b = tmp_path / "shared_lib"
+        for r in (repo_a, repo_b):
+            (r / ".git").mkdir(parents=True)
+        libb = repo_b / "libb.py"
+        main = repo_a / "main.py"
+        libb.write_text("def helper():\n    return 1\n")
+        main.write_text("from shared_lib.libb import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [libb, main])
+
+        # The import resolves across the two sibling repos into a real edge.
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(libb) in imports, "import did not resolve across sibling repos"
+
+        # And that edge's endpoints carry the two different repo tags: cross-repo.
+        assert graph.node_repo(str(main)) == "service"
+        assert graph.node_repo(str(libb)) == "shared_lib"
+        assert graph.node_repo(str(main)) != graph.node_repo(str(libb))
+
+    def test_migrates_legacy_db_without_repo_column(self, tmp_path):
+        # A graph.db created before the repo column must gain it on open, so
+        # add_node's INSERT doesn't hit "no such column".
+        import sqlite3
+
+        from mnemostack.core.retrieval.call_graph import CallGraph, NodeType, _repo_of
+
+        con = sqlite3.connect(str(tmp_path / "graph.db"))
+        con.executescript(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " qualified_name TEXT UNIQUE NOT NULL, node_type TEXT NOT NULL,"
+            " file_path TEXT NOT NULL);"
+            "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " source_id INTEGER, target_id INTEGER, edge_type TEXT);"
+        )
+        con.commit()
+        con.close()
+
+        g = CallGraph(store_dir=tmp_path)
+        g.add_node("x.py", NodeType.FILE, "x.py")
+        g.commit()
+        assert g.node_repo("x.py") == _repo_of("x.py")
+        g.close()

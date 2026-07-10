@@ -40,6 +40,21 @@ _parser_init_lock = threading.Lock()
 _py_parse_lock = threading.Lock()
 
 
+def _repo_of(file_path: str) -> str:
+    """Identity of the repo a file belongs to.
+
+    The basename of the file's nearest ``.git`` ancestor, or of its import root
+    when the file isn't inside a git repo. Two files with different repo tags on
+    an edge mean the edge crosses a repo boundary.
+    """
+    p = Path(file_path)
+    for parent in p.parents:
+        if (parent / ".git").exists():
+            return parent.name
+    root = find_import_root(p)
+    return root.name or str(root)
+
+
 def _get_python_parser() -> tuple[Parser, threading.Lock]:
     """Return (Parser, lock). Lock must be held while calling parser.parse()."""
     global _PY_LANGUAGE, _PY_PARSER
@@ -87,7 +102,8 @@ class CallGraph:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 qualified_name TEXT UNIQUE NOT NULL,
                 node_type TEXT NOT NULL,
-                file_path TEXT NOT NULL
+                file_path TEXT NOT NULL,
+                repo TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
             CREATE INDEX IF NOT EXISTS idx_nodes_qname ON nodes(qualified_name);
@@ -102,6 +118,11 @@ class CallGraph:
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
         """)
+        # Migrate graph.db created before the repo column existed. CREATE TABLE
+        # IF NOT EXISTS above leaves an old table untouched, so add the column.
+        cols = {row[1] for row in self.db.execute("PRAGMA table_info(nodes)")}
+        if "repo" not in cols:
+            self.db.execute("ALTER TABLE nodes ADD COLUMN repo TEXT")
 
     def add_node(self, qualified_name: str, node_type: NodeType, file_path: str) -> int:
         """Add a node (or get existing). Returns node ID.
@@ -117,8 +138,9 @@ class CallGraph:
                 return row[0]
 
             cursor = self.db.execute(
-                "INSERT INTO nodes (qualified_name, node_type, file_path) VALUES (?, ?, ?)",
-                (qualified_name, node_type.value, file_path),
+                "INSERT INTO nodes (qualified_name, node_type, file_path, repo) "
+                "VALUES (?, ?, ?, ?)",
+                (qualified_name, node_type.value, file_path, _repo_of(file_path)),
             )
             assert cursor.lastrowid is not None
             return cursor.lastrowid
@@ -288,6 +310,14 @@ class CallGraph:
                 "SELECT 1 FROM nodes WHERE qualified_name = ?", (qualified_name,)
             ).fetchone()
         return row is not None
+
+    def node_repo(self, qualified_name: str) -> str | None:
+        """Repo a node belongs to, or None if the node doesn't exist."""
+        with _graph_lock:
+            row = self.db.execute(
+                "SELECT repo FROM nodes WHERE qualified_name = ?", (qualified_name,)
+            ).fetchone()
+        return row[0] if row else None
 
     def close(self) -> None:
         if self._db:
