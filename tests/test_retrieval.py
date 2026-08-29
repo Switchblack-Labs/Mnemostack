@@ -1023,6 +1023,55 @@ class TestRepoTagging:
         assert graph.node_repo(str(libb)) == "shared_lib"
         assert graph.node_repo(str(main)) != graph.node_repo(str(libb))
 
+    def test_import_resolves_into_unrelated_indexed_repo(self, tmp_path, graph):
+        # Repos in unrelated locations on disk (no shared package ancestor), so
+        # only the indexed-module lookup can connect them.
+        repo_a = tmp_path / "work" / "service"
+        repo_b = tmp_path / "elsewhere" / "checkout"
+        for r in (repo_a, repo_b):
+            (r / ".git").mkdir(parents=True)
+        pkg = repo_b / "shared_lib"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        util = pkg / "util.py"
+        util.write_text("def helper():\n    return 1\n")
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [util, main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(util) in imports, "import did not reach the other indexed repo"
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{util}::helper" in calls
+        assert graph.node_repo(str(main)) != graph.node_repo(str(util))
+
+    def test_ambiguous_module_across_repos_creates_no_edge(self, tmp_path, graph):
+        # Same module path indexed in two repos: guessing one would be a lie.
+        repo_a = tmp_path / "work" / "service"
+        others = [tmp_path / "x" / "one", tmp_path / "y" / "two"]
+        (repo_a / ".git").mkdir(parents=True)
+        utils = []
+        for r in others:
+            pkg = r / "shared_lib"
+            pkg.mkdir(parents=True)
+            (r / ".git").mkdir()
+            (pkg / "__init__.py").write_text("")
+            u = pkg / "util.py"
+            u.write_text("def helper():\n    return 1\n")
+            utils.append(u)
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [*utils, main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert imports == [], "ambiguous module must not resolve to a guessed repo"
+
     def test_migrates_legacy_db_without_repo_column(self, tmp_path):
         # A graph.db created before the repo column must gain it on open, so
         # add_node's INSERT doesn't hit "no such column".

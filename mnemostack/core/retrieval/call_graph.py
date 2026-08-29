@@ -319,6 +319,26 @@ class CallGraph:
             ).fetchone()
         return row[0] if row else None
 
+    def find_indexed_module(self, module: str) -> str | None:
+        """Path of an indexed file for a dotted module, from any repo in the graph.
+
+        The disk resolver only searches the importing file's own repo, so an
+        import that crosses into another indexed repo resolves here instead:
+        match a file whose path ends in ``a/b/c.py`` or ``a/b/c/__init__.py``.
+        Returns None unless exactly one file matches — an ambiguous name (the
+        same module path in two repos) stays quiet rather than guessing.
+        """
+        if not module:
+            return None
+        rel = "/".join(module.split("."))
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT qualified_name FROM nodes WHERE node_type = ? "
+                "AND (file_path LIKE ? OR file_path LIKE ?) LIMIT 2",
+                (NodeType.FILE.value, f"%/{rel}.py", f"%/{rel}/__init__.py"),
+            ).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
+
     def close(self) -> None:
         if self._db:
             self._db.close()
@@ -326,6 +346,26 @@ class CallGraph:
 
 
 # --- Python-specific call/import extraction ---
+
+
+def _resolve_module(
+    importing_path: Path,
+    module: str,
+    level: int,
+    import_root: Path,
+    graph: CallGraph,
+) -> str | None:
+    """File a module resolves to: on disk in this repo first, then across repos.
+
+    A relative import can never leave its own package, so it is never looked up
+    across repos.
+    """
+    resolved = resolve_module_file(importing_path, module, level, import_root)
+    if resolved is not None:
+        return str(resolved)
+    if level > 0:
+        return None
+    return graph.find_indexed_module(module)
 
 
 def build_nodes_for_python_file(
@@ -431,10 +471,9 @@ def link_python_file_imports(
         if rec.symbol is not None:
             modules.append(f"{rec.module}.{rec.symbol}" if rec.module else rec.symbol)
         for module in modules:
-            resolved = resolve_module_file(file_path, module, rec.level, import_root)
-            if resolved is None:
+            target = _resolve_module(file_path, module, rec.level, import_root, graph)
+            if target is None:
                 continue
-            target = str(resolved)
             if target in linked_targets:
                 continue
             linked_targets.add(target)
@@ -510,7 +549,9 @@ def _extract_cross_file_calls(
                 continue
             if graph.has_node(f"{file_path}::{call_name}"):
                 continue  # local definition shadows the import
-            resolved = resolve_module_file(importing_path, rec.module, rec.level, import_root)
+            resolved = _resolve_module(
+                importing_path, rec.module, rec.level, import_root, graph
+            )
             if resolved is None:
                 continue
             target = f"{resolved}::{rec.symbol}"
@@ -533,7 +574,9 @@ def _extract_cross_file_calls(
                     module = f"{rec.module}.{rec.symbol}"  # from pkg import sub; sub.f()
                 else:
                     module = rec.symbol  # from . import sub; sub.f()
-                resolved = resolve_module_file(importing_path, module, rec.level, import_root)
+                resolved = _resolve_module(
+                    importing_path, module, rec.level, import_root, graph
+                )
                 if resolved is None:
                     break
                 target = f"{resolved}::{remaining[0]}"
