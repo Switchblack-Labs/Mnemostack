@@ -330,6 +330,22 @@ class CallGraph:
             ).fetchone()
         return row[0] if row else None
 
+    def external_imports(self, file_path: str) -> list[str]:
+        """Files a file imports that exist on disk but outside the index.
+
+        External nodes hang off the importing *file*, so this is the boundary
+        report for any chunk that file contains.
+        """
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT t.qualified_name FROM edges e "
+                "JOIN nodes s ON s.id = e.source_id "
+                "JOIN nodes t ON t.id = e.target_id "
+                "WHERE s.qualified_name = ? AND e.edge_type = ? AND t.node_type = ?",
+                (file_path, EdgeType.IMPORTS_FROM.value, NodeType.EXTERNAL.value),
+            ).fetchall()
+        return sorted(row[0] for row in rows)
+
     def find_indexed_module(self, module: str) -> str | None:
         """Path of an indexed file for a dotted module, from any repo in the graph.
 

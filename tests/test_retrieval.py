@@ -580,6 +580,54 @@ class TestCrossFileLinking:
         fts_idx.close()
 
 
+    def test_query_reports_unindexed_dependency_as_boundary(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """A dependency installed on disk but never indexed is reported as a
+        boundary instead of vanishing from the result."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        proj = tmp_store / "svc"
+        (proj / ".git").mkdir(parents=True)
+        site = proj / ".venv" / "lib" / "python3.12" / "site-packages" / "vendorlib"
+        site.mkdir(parents=True)
+        (site / "__init__.py").write_text("def ship():\n    return 1\n")
+        (proj / "app.py").write_text(
+            "from vendorlib import ship\n\ndef zzdeliver_unique():\n    return ship()\n"
+        )
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=proj, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        monkeypatch.setattr(
+            query_mod, "embed_query", lambda q, model=None: np.zeros(4, dtype=np.float32)
+        )
+
+        results = query_pipeline(
+            query="zzdeliver_unique",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+        installed = str(site / "__init__.py")
+        assert any(installed in r.external_dependencies for r in results), (
+            "unindexed dependency was dropped instead of reported as a boundary"
+        )
+
+        faiss_idx.close()
+        fts_idx.close()
+
+
 # --- Ranker Tests ---
 
 

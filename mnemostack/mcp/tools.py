@@ -26,6 +26,7 @@ class CodeChunk(BaseModel):
     line_end: int = Field(ge=1)
     score: float = Field(ge=0.0)
     dependencies: list[str] = Field(default_factory=list)
+    external_dependencies: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_line_range(self) -> CodeChunk:
@@ -121,7 +122,9 @@ async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
     chunks (hybrid FTS5+FAISS search, RRF fusion, recency ranking) plus the call-graph
     dependency chain of those results, so callees/callers a top hit relies on are
     included even when they don't match the query directly. Each chunk's `dependencies`
-    lists the qualified names it calls or imports."""
+    lists the qualified names it calls or imports, and `external_dependencies` lists
+    dependencies that exist on disk but outside the index (installed packages, other
+    repos) as file paths — the boundary of what has been indexed."""
     if not query:
         raise ValueError("query must not be empty")
     if top_k <= 0:
@@ -147,6 +150,7 @@ async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
             line_end=r.line_end,
             score=r.final_score,
             dependencies=r.dependencies,
+            external_dependencies=r.external_dependencies,
         )
         for r in results
     ]
