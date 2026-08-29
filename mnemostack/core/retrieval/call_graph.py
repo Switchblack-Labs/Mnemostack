@@ -1,6 +1,6 @@
 """Lightweight call graph for dependency-aware retrieval.
 
-3 node types: File, Function, Class
+4 node types: File, Function, Class, External (an installed dependency)
 3 edge types: CALLS, IMPORTS_FROM, CONTAINS
 
 Stored in SQLite. Supports 2-hop BFS expansion for cross-file dependency chains.
@@ -9,11 +9,14 @@ Used to enrich retrieval results with related code that pure similarity would mi
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 import threading
 from collections import deque
 from collections.abc import Iterable
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 import tree_sitter_python as tspython
@@ -48,6 +51,13 @@ def _repo_of(file_path: str) -> str:
     an edge mean the edge crosses a repo boundary.
     """
     p = Path(file_path)
+    parts = p.parts
+    if "site-packages" in parts:
+        # An installed dependency: tag it by the package it belongs to, not by
+        # the venv directory it happens to live in.
+        i = parts.index("site-packages")
+        if i + 1 < len(parts):
+            return f"pkg:{Path(parts[i + 1]).stem}"
     for parent in p.parents:
         if (parent / ".git").exists():
             return parent.name
@@ -70,6 +80,7 @@ class NodeType(str, Enum):
     FILE = "file"
     FUNCTION = "function"
     CLASS = "class"
+    EXTERNAL = "external"
 
 
 class EdgeType(str, Enum):
@@ -348,6 +359,47 @@ class CallGraph:
 # --- Python-specific call/import extraction ---
 
 
+@lru_cache(maxsize=256)
+def _site_packages_dirs(repo_root: Path) -> tuple[Path, ...]:
+    """site-packages directories of the virtualenvs belonging to a repo.
+
+    An installed dependency's real source already sits on disk, so an import
+    that leaves the repo can still be pointed at actual code. Looks at the repo's
+    own ``.venv``/``venv`` and at an active ``VIRTUAL_ENV``.
+    """
+    candidates = [repo_root / ".venv", repo_root / "venv"]
+    active = os.environ.get("VIRTUAL_ENV")
+    if active:
+        candidates.append(Path(active))
+    dirs: list[Path] = []
+    for venv in candidates:
+        # posix: lib/pythonX.Y/site-packages, windows: Lib/site-packages
+        dirs.extend(d for d in venv.glob("lib/*/site-packages") if d.is_dir())
+        win = venv / "Lib" / "site-packages"
+        if win.is_dir():
+            dirs.append(win)
+    return tuple(dict.fromkeys(dirs))
+
+
+def _repo_root(file_path: Path) -> Path:
+    """Nearest .git ancestor of a file, or its import root if it isn't in a repo."""
+    for parent in file_path.parents:
+        if (parent / ".git").exists():
+            return parent
+    return find_import_root(file_path)
+
+
+def _installed_module_file(importing_path: Path, module: str) -> Path | None:
+    """Resolve a module to an installed dependency's source file, if present."""
+    if not module or module.split(".")[0] in sys.stdlib_module_names:
+        return None
+    for site_dir in _site_packages_dirs(_repo_root(importing_path)):
+        resolved = resolve_module_file(site_dir / "__main__.py", module, 0, site_dir)
+        if resolved is not None:
+            return resolved
+    return None
+
+
 def _resolve_module(
     importing_path: Path,
     module: str,
@@ -470,15 +522,32 @@ def link_python_file_imports(
         modules = [rec.module]
         if rec.symbol is not None:
             modules.append(f"{rec.module}.{rec.symbol}" if rec.module else rec.symbol)
+        resolved_any = False
         for module in modules:
             target = _resolve_module(file_path, module, rec.level, import_root, graph)
             if target is None:
                 continue
+            resolved_any = True
             if target in linked_targets:
                 continue
             linked_targets.add(target)
             if graph.has_node(target):
                 graph.add_edge(fpath_str, target, EdgeType.IMPORTS_FROM)
+
+        if resolved_any or rec.level > 0:
+            continue
+        # The import left the indexed code. If it lands in an installed
+        # dependency whose source is on disk, record the boundary and where that
+        # code is, so the agent can see the edge of what we indexed.
+        external = _installed_module_file(file_path, rec.module)
+        if external is None:
+            continue
+        ext_path = str(external)
+        if ext_path in linked_targets:
+            continue
+        linked_targets.add(ext_path)
+        graph.add_node(ext_path, NodeType.EXTERNAL, ext_path)
+        graph.add_edge(fpath_str, ext_path, EdgeType.IMPORTS_FROM)
 
     # Cross-file CALLS edges to imported functions.
     _extract_cross_file_calls(root, source, fpath_str, import_table, graph, file_path, import_root)

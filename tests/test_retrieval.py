@@ -8,6 +8,7 @@ full query pipeline (with mocked embeddings).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -1071,6 +1072,28 @@ class TestRepoTagging:
             str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
         )
         assert imports == [], "ambiguous module must not resolve to a guessed repo"
+
+    def test_import_of_installed_package_records_the_boundary(self, tmp_path, graph):
+        # A dependency that isn't indexed but whose source is installed on disk:
+        # the graph should say where the code is instead of going silent.
+        repo = tmp_path / "service"
+        (repo / ".git").mkdir(parents=True)
+        site = repo / ".venv" / "lib" / "python3.12" / "site-packages"
+        pkg = site / "vendorlib"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("def ship():\n    return 1\n")
+        main = repo / "main.py"
+        main.write_text("import os\nfrom vendorlib import ship\n\ndef run():\n    ship()\n")
+        self._build(graph, [main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        installed = str(pkg / "__init__.py")
+        assert installed in imports, "installed dependency boundary not recorded"
+        assert graph.node_repo(installed) == "pkg:vendorlib"
+        # stdlib is not a boundary worth reporting
+        assert not any("os" in Path(i).parts for i in imports)
 
     def test_migrates_legacy_db_without_repo_column(self, tmp_path):
         # A graph.db created before the repo column must gain it on open, so
