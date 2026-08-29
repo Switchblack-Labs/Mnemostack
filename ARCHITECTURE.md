@@ -64,7 +64,33 @@ Mnemostack builds a live dependency graph from your AST, then uses that graph to
   - Optionally: two-hop dependencies for complex queries (configurable)
 - Graph is stored alongside the FAISS index and updated incrementally
 - Implementation: use tree-sitter queries to extract call sites and imports, store as adjacency list
-- This ensures cross-file relationships are never missed
+- This captures cross-file relationships that lexical search (grep) traverses only one guessed hop at a time — a single query returns the transitive closure instead of N sequential round-trips
+
+##### Limitation: static analysis misses runtime edges (dynamic languages)
+
+The call graph is built from **static AST analysis**, so it sees only edges resolvable
+without running the code. It silently drops edges that exist only at runtime:
+
+- dynamic dispatch / duck typing (`obj.method()` where `obj`'s type isn't statically known)
+- decorators and metaprogramming (`@app.route`, `functools.wraps`, class decorators)
+- dependency injection and registries (handlers wired up by string name or config)
+- `getattr` / `__getattr__` / reflection, signals & event buses, callbacks
+- framework "magic" (Django signals, Flask blueprints, pytest fixtures, Celery tasks)
+
+This is the graph's core trade: **precision on static structure, at the cost of recall on
+indirection.** Python is the worst case — it is heavily dynamic — and it is currently the
+only language with a graph builder. So for dynamic languages the graph must NOT be presented
+as "dependency-complete": a confidently-returned closure can be missing a runtime edge on
+exactly the framework-heavy code where it matters most.
+
+**Direction (dynamic languages need more attention than static ones):**
+- Treat the graph as high-precision/partial-recall; **fall back to grep/semantic search when
+  graph confidence is low** rather than trusting an incomplete closure.
+- Add lightweight dynamic-edge heuristics per language: resolve decorator targets, index
+  common DI/registry patterns, follow string-keyed dispatch tables where statically visible.
+- Surface a per-edge confidence so consumers can tell "verified call" from "inferred".
+- More languages are planned (JS/TS graph builder next); each dynamic language needs its own
+  indirection heuristics, not just a tree-sitter grammar swap.
 
 #### 1C: FAISS HNSW Index
 - Embed each AST chunk using a code embedding model (candidates: OpenAI text-embedding-3-small, CodeBERT, or local model like nomic-embed-text via Ollama)
@@ -326,6 +352,16 @@ Critical distinction: we are NOT adding retrieval on top of existing context stu
 - **After**: coding assistant calls `query_codebase("auth flow")` → we traverse the call graph → return the function + everything it depends on (2 hops) → model processes O(k^2) attention where k << n, with structurally complete context
 
 The model's transformer architecture doesn't change. We control what it sees before it thinks. Every API call is a fresh forward pass on whatever tokens are in the prompt — we just make those tokens cleaner and more relevant.
+
+### Complexity claims — what's real (read before pitching this)
+
+Two complexity numbers float around this project. One holds up; one is true-but-misleading. Stating them honestly so nobody puts the wrong one in a deck and gets shredded by a sharp reviewer.
+
+**"O(log n) vector search" — real, but minor.** FAISS HNSW gives approximate nearest-neighbor search in ~O(log n) per query vs O(n) for brute-force flat search. Genuinely true, but it's (a) approximate, not guaranteed, and (b) only the cost of searching the embedding index — a small slice. It is NOT an advantage "over how an agent works": grep is an O(n) scan but at real repo sizes it's so fast the asymptotics rarely bite. Nice property, small lever.
+
+**"O(n²) → O(k²) attention" — true about transformers, false as a framing of our edge.** Self-attention is O(n²) in context length, so whole-codebase-in-prompt (n tokens) costs O(n²) and retrieving k≪n relevant tokens costs O(k²). The problem: **the O(n²) baseline is a strawman.** No real agent dumps the whole repo into the prompt (Claude Code, Cursor, etc. all retrieve lazily) — so we are not beating a real system by a quadratic factor, only a hypothetical naive one. Against the *real* baseline — grep-based retrieval — both feed the model a small k, so the transformer pays O(k²) **either way**. The graph does not change attention complexity vs grep; it changes *which* k tokens we assemble and *how many tool calls* it takes. That is a **constant-factor** win (fewer round-trips, better transitive-dependency recall), not an asymptotic one.
+
+**Bottom line:** the honest, defensible pitch is amortized one-call dependency tracing + persistent self-maintaining memory — NOT an "log n instead of n²" algorithmic-complexity story, which splices two unrelated facts into one impressive-sounding and indefensible sentence. The O(n²) numbers in the Token Economics box below describe cost vs a naive context-stuffing baseline, not vs a real retrieval-based agent — label them that way.
 
 ---
 
