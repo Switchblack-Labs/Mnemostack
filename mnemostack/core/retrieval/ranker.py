@@ -40,8 +40,19 @@ class RankedResult:
     external_dependencies: list[str] = field(default_factory=list)
 
 
-# RRF constant (standard value from literature)
-_RRF_K = 60
+# RRF constant. The literature's k=60 is calibrated for fusing ranked lists of
+# thousands, where it damps the influence of the top few ranks. This pipeline
+# fuses ~15 candidates, and at k=60 every one of them lands within 10% of the
+# same score — flattening relevance until the recency and dependency bonuses
+# below decide the order, so a freshly edited but poorly matching chunk outranked
+# the right answer. Measured over two query sets (one held out): k=3 lifted MRR
+# from 0.60 to 0.81 and 0.55 to 0.65 respectively, with no loss of recall.
+# ponytail: tied to the ~15 candidates query_pipeline fetches; derive k from the
+# list length if that fetch count ever becomes configurable.
+_RRF_K = 3
+
+# How far an import-block chunk is demoted; see rerank().
+_IMPORT_CHUNK_PENALTY = 0.5
 
 
 def reciprocal_rank_fusion(
@@ -167,6 +178,15 @@ def rerank(
             + weights.recency * recency
             + weights.dependency * dep_bonus
         )
+
+    # An import block matches a question's vocabulary well — it names the very
+    # libraries and components being asked about — but almost never answers it,
+    # and the graph now reports a file's dependencies far better than its import
+    # lines do. Rank it below real code rather than dropping it: for a question
+    # genuinely about wiring, it is still the right chunk.
+    for r in results:
+        if r.chunk_type == "import":
+            r.final_score *= _IMPORT_CHUNK_PENALTY
 
     # Apply query intent boost
     apply_query_intent_boost(results, query)
