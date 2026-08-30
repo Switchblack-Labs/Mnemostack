@@ -330,12 +330,11 @@ class CallGraph:
             ).fetchone()
         return row[0] if row else None
 
-    def python_files(self) -> list[str]:
-        """Every indexed Python file, by path."""
+    def source_files(self) -> list[str]:
+        """Every indexed source file that has a graph builder, by path."""
         with _graph_lock:
             rows = self.db.execute(
-                "SELECT file_path FROM nodes WHERE node_type = ? AND file_path LIKE '%.py'",
-                (NodeType.FILE.value,),
+                "SELECT file_path FROM nodes WHERE node_type = ?", (NodeType.FILE.value,)
             ).fetchall()
         return [row[0] for row in rows]
 
