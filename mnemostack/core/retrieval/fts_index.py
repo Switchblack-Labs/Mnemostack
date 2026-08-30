@@ -184,6 +184,8 @@ class FTSIndex:
             return []
 
         safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
 
         try:
             with _db_lock:
@@ -233,15 +235,37 @@ class FTSIndex:
             self._db = None
 
 
+# Function words, plus the verbs a question about code is phrased with rather
+# than about. Deliberately short: anything that could name a real symbol stays.
+_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for",
+    "from", "how", "i", "in", "into", "is", "it", "its", "of", "on", "or", "our",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this",
+    "to", "was", "we", "what", "when", "where", "which", "who", "why", "with",
+    "you", "your",
+})
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Convert a raw user query into a safe FTS5 query.
 
-    Strips existing quotes, then wraps individual tokens in quotes to prevent
-    FTS5 syntax errors from special characters in code identifiers.
+    Each token is quoted so characters that are FTS5 syntax (``.``, ``*``, ``-``,
+    ``:``) in code identifiers can't produce a syntax error, and the tokens are
+    joined with OR.
+
+    OR, not FTS5's implicit AND: no chunk contains every word of a question
+    asked in prose, so an AND made the keyword half of hybrid search return
+    nothing at all for natural-language queries, leaving RRF to fuse one list.
+    BM25 already ranks a chunk matching several rare terms above one matching a
+    single common word.
     """
     # Strip existing quotes to avoid double-quoting
     cleaned = query.replace('"', " ")
     tokens = cleaned.split()
-    if not tokens:
-        return query
-    return " ".join(f'"{t}"' for t in tokens)
+    # Under OR, a word carrying no information about the question still pulls in
+    # every chunk that happens to contain it, so drop the ones a code question is
+    # never really asking about. A query left with nothing has no keyword signal
+    # at all: return no query rather than matching on "the", and let the semantic
+    # half answer alone.
+    meaningful = [t for t in tokens if t.lower() not in _STOPWORDS]
+    return " OR ".join(f'"{t}"' for t in meaningful)

@@ -179,13 +179,27 @@ async def test_query_codebase_rejects_nonpositive_top_k():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_memory(tmp_path, monkeypatch):
-    """Point the shared state singleton at a fresh memory store per test so
-    constraint writes don't pollute ./store or bleed across tests."""
+def _isolate_state(tmp_path, monkeypatch):
+    """Point the shared state singleton at fresh stores per test.
+
+    Every index the tools touch is redirected, not just memory: the singleton
+    otherwise opens ./store, so these tests passed only on a machine that had
+    never indexed anything and failed for anyone actually using Mnemostack.
+    """
     from mnemostack.core.compression.memory_store import MemoryStore
+    from mnemostack.core.retrieval.call_graph import CallGraph
+    from mnemostack.core.retrieval.faiss_index import FaissIndex, create_chunks_db
+    from mnemostack.core.retrieval.fts_index import FTSIndex
     from mnemostack.core.state import state
 
+    db = create_chunks_db(tmp_path)
     monkeypatch.setattr(state, "_memory", MemoryStore(store_dir=tmp_path))
+    monkeypatch.setattr(state, "_chunks_db", db)
+    monkeypatch.setattr(state, "_faiss", FaissIndex(store_dir=tmp_path, db=db))
+    monkeypatch.setattr(state, "_fts", FTSIndex(store_dir=tmp_path, db=db))
+    monkeypatch.setattr(state, "_graph", CallGraph(store_dir=tmp_path))
+    yield
+    db.close()
 
 
 async def test_get_session_context_empty_on_fresh_store():

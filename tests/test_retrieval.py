@@ -270,6 +270,43 @@ class TestFTSIndex:
         results = fts_idx.search("nonexistent_symbol_xyz")
         assert results == []
 
+    def test_natural_language_query_matches_on_some_words(self, faiss_idx, fts_idx):
+        """A question is not a phrase present in the code. Requiring every word
+        (FTS5's implicit AND) returned nothing for any real question, silently
+        reducing hybrid search to its semantic half."""
+        chunks = _make_chunks("watcher.py", ["debounce_events"])
+        ids = faiss_idx.add(chunks, _random_embeddings(1))
+        fts_idx.sync_added(ids)
+
+        results = fts_idx.search("how do we debounce_events before reindexing")
+        assert [r.symbol_name for r in results] == ["debounce_events"]
+
+    def test_stopwords_do_not_drag_in_unrelated_code(self, faiss_idx, fts_idx):
+        """Under OR, a word the question isn't about would match every chunk
+        containing it, so the function words are dropped from the query."""
+        chunk = Chunk(
+            file_path="a.py",
+            symbol_name="parse_request",
+            code="def parse_request():\n    \"\"\"Parse the request.\"\"\"\n    pass",
+            line_start=1,
+            line_end=3,
+            chunk_type=ChunkType.FUNCTION,
+            last_modified=time.time(),
+            qualified_name="a.py::parse_request",
+            dependencies=[],
+        )
+        ids = faiss_idx.add([chunk], _random_embeddings(1))
+        fts_idx.sync_added(ids)
+
+        # The chunk contains "the" and "is" — matching on those alone is noise.
+        assert fts_idx.search("what is the that") == []
+        # A real term still matches, alongside as many stopwords as you like.
+        assert [r.symbol_name for r in fts_idx.search("what is the parse_request")] == [
+            "parse_request"
+        ]
+        # A query that is nothing but stopwords stays a legal query.
+        assert isinstance(fts_idx.search("the"), list)
+
     def test_fts_results_carry_dependencies(self, faiss_idx, fts_idx):
         chunks = [
             Chunk(
@@ -681,6 +718,53 @@ class TestCrossFileLinking:
 
 
 class TestRanker:
+    def test_import_block_ranks_below_real_code(self):
+        """An import block matches a question's vocabulary without answering it."""
+        from mnemostack.core.retrieval.ranker import rerank
+
+        now = time.time()
+        imports = self._make_ranked(chunk_id=1, qname="a.py::<imports>", rrf_rank=(1, 1),
+                                    last_modified=now)
+        imports.chunk_type = "import"
+        code = self._make_ranked(chunk_id=2, qname="a.py::render", rrf_rank=(1, 1),
+                                 last_modified=now)
+        ranked = rerank([imports, code], query="how does rendering work")
+        assert ranked[0].qualified_name == "a.py::render"
+
+    def test_recency_cannot_outrank_a_much_better_match(self):
+        """A stale chunk that both searches rank first must stay above a chunk
+        just edited that only one search ranked ninth. Recency is a tiebreaker,
+        not a trump card — this is the ordering RRF's k controls."""
+        from mnemostack.core.retrieval.ranker import rerank
+
+        now = time.time()
+        best = self._make_ranked(chunk_id=1, qname="right.py::answer", rrf_rank=(1, 1),
+                                 last_modified=now - 90 * 86400)
+        fresh = self._make_ranked(chunk_id=2, qname="wrong.py::helper", rrf_rank=(9, None),
+                                  last_modified=now)
+        ranked = rerank([fresh, best], query="how does the thing work")
+        assert ranked[0].qualified_name == "right.py::answer", (
+            "a freshly edited weak match outranked the best match"
+        )
+
+    def _make_ranked(self, chunk_id, qname, rrf_rank, last_modified):
+        from mnemostack.core.retrieval.ranker import _RRF_K, RankedResult
+
+        score = sum(1.0 / (_RRF_K + rank) for rank in rrf_rank if rank is not None)
+        return RankedResult(
+            chunk_id=chunk_id,
+            file_path=qname.split("::")[0],
+            symbol_name=qname.split("::")[1],
+            code="pass",
+            line_start=1,
+            line_end=1,
+            chunk_type="function",
+            qualified_name=qname,
+            last_modified=last_modified,
+            dependencies=[],
+            final_score=score,
+        )
+
     def _make_faiss_result(self, chunk_id, score=0.5, symbol="foo", qname="a.py::foo"):
         from mnemostack.core.retrieval.faiss_index import SearchResult
 
