@@ -90,7 +90,9 @@ class Confirmation(BaseModel):
 async def index_project(root_dir: str) -> Confirmation:
     """Index a project directory. Chunks all files, embeds them, and populates
     the search index and call graph. Must be called before query_codebase will
-    return results."""
+    return results. Call it once per repo you're working across — repos share one
+    graph, so imports from one into another become real edges, and every indexed
+    repo stays watched for changes."""
     if not root_dir:
         raise ValueError("root_dir must not be empty")
 
@@ -110,9 +112,10 @@ async def index_project(root_dir: str) -> Confirmation:
         graph=state.graph,
     )
     state.start_watching(root)
+    watched = ", ".join(str(r) for r in state.watched_roots)
     return Confirmation(
         success=True,
-        message=f"Indexed {count} chunks from {root} (file watcher active)",
+        message=f"Indexed {count} chunks from {root} (watching: {watched})",
     )
 
 
