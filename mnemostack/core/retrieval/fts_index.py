@@ -253,11 +253,11 @@ def _sanitize_fts_query(query: str) -> str:
     ``:``) in code identifiers can't produce a syntax error, and the tokens are
     joined with OR.
 
-    OR, not FTS5's implicit AND: a question like "the react component that
-    renders the playground editor" has no chunk containing every one of its
-    words, so an AND made the keyword half of hybrid search return nothing at
-    all for natural-language queries — leaving RRF fusing one list. BM25 already
-    ranks a chunk matching several rare terms above one matching only "the".
+    OR, not FTS5's implicit AND: no chunk contains every word of a question
+    asked in prose, so an AND made the keyword half of hybrid search return
+    nothing at all for natural-language queries, leaving RRF to fuse one list.
+    BM25 already ranks a chunk matching several rare terms above one matching a
+    single common word.
     """
     # Strip existing quotes to avoid double-quoting
     cleaned = query.replace('"', " ")
