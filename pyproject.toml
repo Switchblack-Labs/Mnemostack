@@ -22,6 +22,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# For the pip path used by start.sh: `pip install -e ".[dev]"`.
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+# Same list as the dev extra, for the uv path. uv sync installs dependency
+# groups by default but not optional extras, and without this `uv run pytest`
+# in a fresh clone silently falls through to whatever pytest is on PATH — a
+# system interpreter that has none of the project's dependencies installed.
+[dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
