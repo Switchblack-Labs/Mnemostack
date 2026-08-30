@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mnemostack.config.settings import settings
 from mnemostack.core.retrieval.faiss_index import SearchResult
@@ -36,6 +36,8 @@ class RankedResult:
     keyword_score: float = 0.0
     recency_score: float = 0.0
     dependency_score: float = 0.0
+    # Dependencies we know of but haven't indexed (installed packages, other repos)
+    external_dependencies: list[str] = field(default_factory=list)
 
 
 # RRF constant (standard value from literature)

@@ -29,7 +29,7 @@ class _State:
         self._faiss: FaissIndex | None = None
         self._fts: FTSIndex | None = None
         self._graph: CallGraph | None = None
-        self._watcher: FileWatcher | None = None
+        self._watchers: dict[Path, FileWatcher] = {}
         self._memory: MemoryStore | None = None
 
     @property
@@ -74,9 +74,19 @@ class _State:
         return self._graph
 
     def start_watching(self, root: Path) -> None:
-        """Start the file watcher for incremental re-indexing."""
+        """Watch a project root for incremental re-indexing.
+
+        One watcher per root, so indexing a second repo doesn't blind the first —
+        the graph spans several repos at once and they all have to stay live. A
+        root already covered by a watched ancestor is a no-op; a root that
+        contains watched children replaces them.
+        """
+        root = root.resolve()
         with _init_lock:
-            self.stop_watching()
+            if any(root == w or w in root.parents for w in self._watchers):
+                return
+            for nested in [w for w in self._watchers if root in w.parents]:
+                self.stop_watching(nested)
 
             from mnemostack.core.retrieval.indexer import reindex_file
 
@@ -87,19 +97,27 @@ class _State:
                     except Exception:
                         log.exception("Failed to re-index %s", path)
 
-            self._watcher = FileWatcher(root, _on_files_changed)
-            self._watcher.start()
+            watcher = FileWatcher(root, _on_files_changed)
+            watcher.start()
+            self._watchers[root] = watcher
             log.info("File watcher started for %s", root)
 
-    def stop_watching(self) -> None:
-        """Stop the file watcher if running."""
-        if self._watcher is not None:
-            self._watcher.stop()
-            self._watcher = None
+    def stop_watching(self, root: Path | None = None) -> None:
+        """Stop the watcher for one root, or all of them when root is None."""
+        with _init_lock:
+            roots = [root.resolve()] if root is not None else list(self._watchers)
+            for r in roots:
+                watcher = self._watchers.pop(r, None)
+                if watcher is not None:
+                    watcher.stop()
+
+    @property
+    def watched_roots(self) -> list[Path]:
+        return sorted(self._watchers)
 
     @property
     def is_watching(self) -> bool:
-        return self._watcher is not None and self._watcher.is_running
+        return any(w.is_running for w in self._watchers.values())
 
     def close(self) -> None:
         self.stop_watching()

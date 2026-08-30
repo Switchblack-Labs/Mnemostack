@@ -103,3 +103,42 @@ class TestFileWatcher:
             assert len(received) <= 2
         finally:
             watcher.stop()
+
+
+class TestMultiRootWatching:
+    """Several repos are indexed into one graph, so all of them stay watched."""
+
+    def test_watching_a_second_root_keeps_the_first(self, tmp_path, monkeypatch):
+        from mnemostack.core.state import _State
+
+        repo_a, repo_b = tmp_path / "a", tmp_path / "b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        state = _State()
+        try:
+            state.start_watching(repo_a)
+            state.start_watching(repo_b)
+            assert state.watched_roots == sorted([repo_a.resolve(), repo_b.resolve()])
+            assert state.is_watching
+        finally:
+            state.stop_watching()
+        assert state.watched_roots == []
+
+    def test_nested_root_is_covered_by_its_parent(self, tmp_path):
+        from mnemostack.core.state import _State
+
+        parent = tmp_path / "repo"
+        child = parent / "pkg"
+        child.mkdir(parents=True)
+        state = _State()
+        try:
+            state.start_watching(parent)
+            state.start_watching(child)
+            assert state.watched_roots == [parent.resolve()]
+            # The reverse order collapses to the parent too, not two watchers.
+            state.stop_watching()
+            state.start_watching(child)
+            state.start_watching(parent)
+            assert state.watched_roots == [parent.resolve()]
+        finally:
+            state.stop_watching()

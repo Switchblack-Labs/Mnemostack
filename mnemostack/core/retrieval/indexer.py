@@ -20,6 +20,11 @@ from mnemostack.core.retrieval.constants import INDEXABLE_EXTENSIONS, SKIP_DIRS
 from mnemostack.core.retrieval.embed import EmbeddingError, embed_texts
 from mnemostack.core.retrieval.faiss_index import FaissIndex
 from mnemostack.core.retrieval.fts_index import FTSIndex
+from mnemostack.core.retrieval.js_graph import (
+    JS_EXTENSIONS,
+    build_nodes_for_js_file,
+    link_js_file_imports,
+)
 
 log = logging.getLogger(__name__)
 
@@ -66,20 +71,50 @@ def index_directory(
         graph.remove_file(fpath_str)
     all_chunks: list[Chunk] = []
     py_files: list[Path] = []
+    js_files: list[Path] = []
 
     for f in files:
         chunks = chunk_file_auto(f)
         all_chunks.extend(chunks)
-        if f.suffix.lower() == ".py":
+        ext = f.suffix.lower()
+        if ext == ".py":
             py_files.append(f)
+        elif ext in JS_EXTENSIONS:
+            js_files.append(f)
 
     # Build the call graph in two passes so cross-file edges can resolve: first
     # every file's nodes, then the import/cross-file-call edges between them
     # (add_edge no-ops if a target node doesn't exist yet).
     for f in py_files:
         build_nodes_for_python_file(f, graph=graph)
+    for f in js_files:
+        build_nodes_for_js_file(f, graph=graph)
     for f in py_files:
         link_python_file_imports(f, graph=graph)
+    for f in js_files:
+        link_js_file_imports(f, graph=graph)
+
+    # Repos are indexed one call at a time, so files indexed earlier may have
+    # imports that only now resolve — into this repo, or into a dependency of it.
+    # Re-link them and drop their stale boundary edges, otherwise a cross-repo
+    # link would exist only when the repos happened to be indexed in the right
+    # order. ponytail: re-parses every previously indexed Python file; batch by
+    # unresolved-import bookkeeping if index time on many repos starts to hurt.
+    indexed_here = {str(f) for f in py_files + js_files}
+    for path_str in graph.source_files():
+        if path_str in indexed_here:
+            continue
+        other = Path(path_str)
+        if not other.is_file():
+            continue
+        ext = other.suffix.lower()
+        if ext != ".py" and ext not in JS_EXTENSIONS:
+            continue
+        graph.clear_external_imports(path_str)
+        if ext == ".py":
+            link_python_file_imports(other, graph=graph)
+        else:
+            link_js_file_imports(other, graph=graph)
 
     if not all_chunks:
         return 0
@@ -116,12 +151,14 @@ def reindex_file(
         Number of new chunks indexed for this file.
     """
     fpath_str = str(file_path)
-    is_python = file_path.suffix.lower() == ".py"
+    ext = file_path.suffix.lower()
+    is_python = ext == ".py"
+    is_js = ext in JS_EXTENSIONS
 
     # remove_file drops edges where this file's nodes are source OR target, so the
     # incoming cross-file edges from other files are lost too. Capture those
     # importers now and re-link them after this file's nodes are rebuilt.
-    importers = graph.importer_files(fpath_str) if is_python else []
+    importers = graph.importer_files(fpath_str) if is_python or is_js else []
 
     # Remove old data (FTS first, then FAISS — correct ordering)
     fts_idx.sync_removed(fpath_str)
@@ -147,9 +184,13 @@ def reindex_file(
     chunk_ids = faiss_idx.add(chunks, embeddings)
     fts_idx.sync_added(chunk_ids)
 
-    # Rebuild call graph for Python files
-    if is_python:
-        build_graph_for_python_file(file_path, graph=graph)
+    # Rebuild call graph
+    if is_python or is_js:
+        if is_python:
+            build_graph_for_python_file(file_path, graph=graph)
+        else:
+            build_nodes_for_js_file(file_path, graph=graph)
+            link_js_file_imports(file_path, graph=graph)
         # Re-link importers so their edges into this file are re-established.
         # ponytail: only re-links files that already had an edge here; a file that
         # imports this one for the first time (e.g. this file is newly created)
@@ -157,8 +198,12 @@ def reindex_file(
         # or periodic full reindex if that case starts to matter.
         for importer in importers:
             importer_path = Path(importer)
-            if importer_path.exists():
+            if not importer_path.exists():
+                continue
+            if importer_path.suffix.lower() == ".py":
                 link_python_file_imports(importer_path, graph=graph)
+            else:
+                link_js_file_imports(importer_path, graph=graph)
 
     faiss_idx.save()
     return len(chunks)

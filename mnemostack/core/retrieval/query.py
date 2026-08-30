@@ -81,9 +81,9 @@ def query_pipeline(
 
     # Surface the resolvable dependency chain on each seed result.
     for result in fused[:top_k]:
-        result.dependencies = sorted(
-            qn for qn in neighbors_by_qname.get(result.qualified_name, []) if qn in qname_to_id
-        )
+        neighbors = neighbors_by_qname.get(result.qualified_name, [])
+        result.dependencies = sorted(qn for qn in neighbors if qn in qname_to_id)
+        result.external_dependencies = graph.external_imports(result.file_path)
 
     # Merge dependency chunks that hybrid search didn't already surface into the
     # candidate set, so the graph expands retrieval (not just re-ranks it). A
@@ -138,9 +138,9 @@ def query_pipeline(
         if new_qnames:
             qname_to_id.update(faiss_idx.get_chunk_ids_by_qnames(new_qnames))
         for result in unseeded:
-            result.dependencies = sorted(
-                qn for qn in neighbors_by_qname[result.qualified_name] if qn in qname_to_id
-            )
+            neighbors = neighbors_by_qname[result.qualified_name]
+            result.dependencies = sorted(qn for qn in neighbors if qn in qname_to_id)
+            result.external_dependencies = graph.external_imports(result.file_path)
         # Make the newly-resolved dependency chunks available to the expansion
         # loop below so a promoted primary's chain can surface like a seed's.
         new_dep_ids = [

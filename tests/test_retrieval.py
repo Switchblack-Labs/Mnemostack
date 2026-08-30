@@ -8,6 +8,7 @@ full query pipeline (with mocked embeddings).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -579,6 +580,103 @@ class TestCrossFileLinking:
         fts_idx.close()
 
 
+    def test_query_reports_unindexed_dependency_as_boundary(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """A dependency installed on disk but never indexed is reported as a
+        boundary instead of vanishing from the result."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        import mnemostack.core.retrieval.query as query_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+        from mnemostack.core.retrieval.query import query_pipeline
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        proj = tmp_store / "svc"
+        (proj / ".git").mkdir(parents=True)
+        site = proj / ".venv" / "lib" / "python3.12" / "site-packages" / "vendorlib"
+        site.mkdir(parents=True)
+        (site / "__init__.py").write_text("def ship():\n    return 1\n")
+        (proj / "app.py").write_text(
+            "from vendorlib import ship\n\ndef zzdeliver_unique():\n    return ship()\n"
+        )
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+        index_directory(root=proj, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        monkeypatch.setattr(
+            query_mod, "embed_query", lambda q, model=None: np.zeros(4, dtype=np.float32)
+        )
+
+        results = query_pipeline(
+            query="zzdeliver_unique",
+            faiss_idx=faiss_idx,
+            fts_idx=fts_idx,
+            graph=graph,
+            top_k=5,
+        )
+        installed = str(site / "__init__.py")
+        assert any(installed in r.external_dependencies for r in results), (
+            "unindexed dependency was dropped instead of reported as a boundary"
+        )
+
+        faiss_idx.close()
+        fts_idx.close()
+
+
+    def test_indexing_a_repo_relinks_repos_indexed_before_it(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """Repo A indexed first, then repo B it depends on: A's import into B
+        must become a real edge, and A's boundary claim must be dropped."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        repo_a = tmp_store / "work" / "service"
+        repo_b = tmp_store / "elsewhere" / "checkout"
+        (repo_a / ".git").mkdir(parents=True)
+        (repo_b / ".git").mkdir(parents=True)
+        # The same dependency is also installed in A's venv, so before B is
+        # indexed the import is a real boundary rather than nothing at all.
+        for pkg in (
+            repo_a / ".venv" / "lib" / "python3.12" / "site-packages" / "shared_lib",
+            repo_b / "shared_lib",
+        ):
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("")
+            (pkg / "util.py").write_text("def helper():\n    return 1\n")
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+
+        index_directory(root=repo_a, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        assert graph.external_imports(str(main)), "installed dependency not seen as boundary"
+
+        index_directory(root=repo_b, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(repo_b / "shared_lib" / "util.py") in imports, (
+            "import did not re-link into the repo indexed afterwards"
+        )
+        assert graph.external_imports(str(main)) == [], "stale boundary edge kept"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+
 # --- Ranker Tests ---
 
 
@@ -983,3 +1081,137 @@ class TestQueryPipelineExpansion:
 
         faiss_idx.close()
         fts_idx.close()
+
+
+class TestRepoTagging:
+    """Nodes carry a repo tag; an edge whose endpoints differ crosses repos."""
+
+    def _build(self, graph, files):
+        from mnemostack.core.retrieval.call_graph import (
+            build_nodes_for_python_file,
+            link_python_file_imports,
+        )
+
+        for f in files:
+            build_nodes_for_python_file(f, graph=graph)
+        for f in files:
+            link_python_file_imports(f, graph=graph)
+
+    def test_cross_repo_edge_endpoints_have_distinct_repos(self, tmp_path, graph):
+        # Two sibling repos on disk under a shared parent, one depending on the
+        # other. .git marks each repo root, so _repo_of tags them apart.
+        repo_a = tmp_path / "service"
+        repo_b = tmp_path / "shared_lib"
+        for r in (repo_a, repo_b):
+            (r / ".git").mkdir(parents=True)
+        libb = repo_b / "libb.py"
+        main = repo_a / "main.py"
+        libb.write_text("def helper():\n    return 1\n")
+        main.write_text("from shared_lib.libb import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [libb, main])
+
+        # The import resolves across the two sibling repos into a real edge.
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(libb) in imports, "import did not resolve across sibling repos"
+
+        # And that edge's endpoints carry the two different repo tags: cross-repo.
+        assert graph.node_repo(str(main)) == "service"
+        assert graph.node_repo(str(libb)) == "shared_lib"
+        assert graph.node_repo(str(main)) != graph.node_repo(str(libb))
+
+    def test_import_resolves_into_unrelated_indexed_repo(self, tmp_path, graph):
+        # Repos in unrelated locations on disk (no shared package ancestor), so
+        # only the indexed-module lookup can connect them.
+        repo_a = tmp_path / "work" / "service"
+        repo_b = tmp_path / "elsewhere" / "checkout"
+        for r in (repo_a, repo_b):
+            (r / ".git").mkdir(parents=True)
+        pkg = repo_b / "shared_lib"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        util = pkg / "util.py"
+        util.write_text("def helper():\n    return 1\n")
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [util, main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(util) in imports, "import did not reach the other indexed repo"
+        calls = graph.get_neighbors(
+            f"{main}::run", hops=1, direction="outgoing", edge_types=(EdgeType.CALLS,)
+        )
+        assert f"{util}::helper" in calls
+        assert graph.node_repo(str(main)) != graph.node_repo(str(util))
+
+    def test_ambiguous_module_across_repos_creates_no_edge(self, tmp_path, graph):
+        # Same module path indexed in two repos: guessing one would be a lie.
+        repo_a = tmp_path / "work" / "service"
+        others = [tmp_path / "x" / "one", tmp_path / "y" / "two"]
+        (repo_a / ".git").mkdir(parents=True)
+        utils = []
+        for r in others:
+            pkg = r / "shared_lib"
+            pkg.mkdir(parents=True)
+            (r / ".git").mkdir()
+            (pkg / "__init__.py").write_text("")
+            u = pkg / "util.py"
+            u.write_text("def helper():\n    return 1\n")
+            utils.append(u)
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+        self._build(graph, [*utils, main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert imports == [], "ambiguous module must not resolve to a guessed repo"
+
+    def test_import_of_installed_package_records_the_boundary(self, tmp_path, graph):
+        # A dependency that isn't indexed but whose source is installed on disk:
+        # the graph should say where the code is instead of going silent.
+        repo = tmp_path / "service"
+        (repo / ".git").mkdir(parents=True)
+        site = repo / ".venv" / "lib" / "python3.12" / "site-packages"
+        pkg = site / "vendorlib"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("def ship():\n    return 1\n")
+        main = repo / "main.py"
+        main.write_text("import os\nfrom vendorlib import ship\n\ndef run():\n    ship()\n")
+        self._build(graph, [main])
+
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        installed = str(pkg / "__init__.py")
+        assert installed in imports, "installed dependency boundary not recorded"
+        assert graph.node_repo(installed) == "pkg:vendorlib"
+        # stdlib is not a boundary worth reporting
+        assert not any("os" in Path(i).parts for i in imports)
+
+    def test_migrates_legacy_db_without_repo_column(self, tmp_path):
+        # A graph.db created before the repo column must gain it on open, so
+        # add_node's INSERT doesn't hit "no such column".
+        import sqlite3
+
+        from mnemostack.core.retrieval.call_graph import CallGraph, NodeType, _repo_of
+
+        con = sqlite3.connect(str(tmp_path / "graph.db"))
+        con.executescript(
+            "CREATE TABLE nodes (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " qualified_name TEXT UNIQUE NOT NULL, node_type TEXT NOT NULL,"
+            " file_path TEXT NOT NULL);"
+            "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " source_id INTEGER, target_id INTEGER, edge_type TEXT);"
+        )
+        con.commit()
+        con.close()
+
+        g = CallGraph(store_dir=tmp_path)
+        g.add_node("x.py", NodeType.FILE, "x.py")
+        g.commit()
+        assert g.node_repo("x.py") == _repo_of("x.py")
+        g.close()

@@ -26,6 +26,7 @@ class CodeChunk(BaseModel):
     line_end: int = Field(ge=1)
     score: float = Field(ge=0.0)
     dependencies: list[str] = Field(default_factory=list)
+    external_dependencies: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_line_range(self) -> CodeChunk:
@@ -89,7 +90,9 @@ class Confirmation(BaseModel):
 async def index_project(root_dir: str) -> Confirmation:
     """Index a project directory. Chunks all files, embeds them, and populates
     the search index and call graph. Must be called before query_codebase will
-    return results."""
+    return results. Call it once per repo you're working across — repos share one
+    graph, so imports from one into another become real edges, and every indexed
+    repo stays watched for changes."""
     if not root_dir:
         raise ValueError("root_dir must not be empty")
 
@@ -109,9 +112,10 @@ async def index_project(root_dir: str) -> Confirmation:
         graph=state.graph,
     )
     state.start_watching(root)
+    watched = ", ".join(str(r) for r in state.watched_roots)
     return Confirmation(
         success=True,
-        message=f"Indexed {count} chunks from {root} (file watcher active)",
+        message=f"Indexed {count} chunks from {root} (watching: {watched})",
     )
 
 
@@ -121,7 +125,9 @@ async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
     chunks (hybrid FTS5+FAISS search, RRF fusion, recency ranking) plus the call-graph
     dependency chain of those results, so callees/callers a top hit relies on are
     included even when they don't match the query directly. Each chunk's `dependencies`
-    lists the qualified names it calls or imports."""
+    lists the qualified names it calls or imports, and `external_dependencies` lists
+    dependencies that exist on disk but outside the index (installed packages, other
+    repos) as file paths — the boundary of what has been indexed."""
     if not query:
         raise ValueError("query must not be empty")
     if top_k <= 0:
@@ -147,6 +153,7 @@ async def query_codebase(query: str, top_k: int = 5) -> list[CodeChunk]:
             line_end=r.line_end,
             score=r.final_score,
             dependencies=r.dependencies,
+            external_dependencies=r.external_dependencies,
         )
         for r in results
     ]

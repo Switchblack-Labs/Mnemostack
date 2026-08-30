@@ -1,6 +1,6 @@
 """Lightweight call graph for dependency-aware retrieval.
 
-3 node types: File, Function, Class
+4 node types: File, Function, Class, External (an installed dependency)
 3 edge types: CALLS, IMPORTS_FROM, CONTAINS
 
 Stored in SQLite. Supports 2-hop BFS expansion for cross-file dependency chains.
@@ -9,11 +9,14 @@ Used to enrich retrieval results with related code that pure similarity would mi
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 import threading
 from collections import deque
 from collections.abc import Iterable
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 import tree_sitter_python as tspython
@@ -40,6 +43,28 @@ _parser_init_lock = threading.Lock()
 _py_parse_lock = threading.Lock()
 
 
+def _repo_of(file_path: str) -> str:
+    """Identity of the repo a file belongs to.
+
+    The basename of the file's nearest ``.git`` ancestor, or of its import root
+    when the file isn't inside a git repo. Two files with different repo tags on
+    an edge mean the edge crosses a repo boundary.
+    """
+    p = Path(file_path)
+    parts = p.parts
+    if "site-packages" in parts:
+        # An installed dependency: tag it by the package it belongs to, not by
+        # the venv directory it happens to live in.
+        i = parts.index("site-packages")
+        if i + 1 < len(parts):
+            return f"pkg:{Path(parts[i + 1]).stem}"
+    for parent in p.parents:
+        if (parent / ".git").exists():
+            return parent.name
+    root = find_import_root(p)
+    return root.name or str(root)
+
+
 def _get_python_parser() -> tuple[Parser, threading.Lock]:
     """Return (Parser, lock). Lock must be held while calling parser.parse()."""
     global _PY_LANGUAGE, _PY_PARSER
@@ -55,6 +80,7 @@ class NodeType(str, Enum):
     FILE = "file"
     FUNCTION = "function"
     CLASS = "class"
+    EXTERNAL = "external"
 
 
 class EdgeType(str, Enum):
@@ -87,7 +113,8 @@ class CallGraph:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 qualified_name TEXT UNIQUE NOT NULL,
                 node_type TEXT NOT NULL,
-                file_path TEXT NOT NULL
+                file_path TEXT NOT NULL,
+                repo TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
             CREATE INDEX IF NOT EXISTS idx_nodes_qname ON nodes(qualified_name);
@@ -102,6 +129,11 @@ class CallGraph:
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
         """)
+        # Migrate graph.db created before the repo column existed. CREATE TABLE
+        # IF NOT EXISTS above leaves an old table untouched, so add the column.
+        cols = {row[1] for row in self.db.execute("PRAGMA table_info(nodes)")}
+        if "repo" not in cols:
+            self.db.execute("ALTER TABLE nodes ADD COLUMN repo TEXT")
 
     def add_node(self, qualified_name: str, node_type: NodeType, file_path: str) -> int:
         """Add a node (or get existing). Returns node ID.
@@ -117,8 +149,9 @@ class CallGraph:
                 return row[0]
 
             cursor = self.db.execute(
-                "INSERT INTO nodes (qualified_name, node_type, file_path) VALUES (?, ?, ?)",
-                (qualified_name, node_type.value, file_path),
+                "INSERT INTO nodes (qualified_name, node_type, file_path, repo) "
+                "VALUES (?, ?, ?, ?)",
+                (qualified_name, node_type.value, file_path, _repo_of(file_path)),
             )
             assert cursor.lastrowid is not None
             return cursor.lastrowid
@@ -289,6 +322,72 @@ class CallGraph:
             ).fetchone()
         return row is not None
 
+    def node_repo(self, qualified_name: str) -> str | None:
+        """Repo a node belongs to, or None if the node doesn't exist."""
+        with _graph_lock:
+            row = self.db.execute(
+                "SELECT repo FROM nodes WHERE qualified_name = ?", (qualified_name,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def source_files(self) -> list[str]:
+        """Every indexed source file that has a graph builder, by path."""
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT file_path FROM nodes WHERE node_type = ?", (NodeType.FILE.value,)
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def clear_external_imports(self, file_path: str) -> None:
+        """Drop a file's boundary edges, before its imports are resolved again.
+
+        A dependency that was outside the index can be indexed later; without
+        this the stale boundary would keep claiming code we can now see.
+        """
+        with _graph_lock:
+            self.db.execute(
+                "DELETE FROM edges WHERE edge_type = ? AND source_id = "
+                "(SELECT id FROM nodes WHERE qualified_name = ?) AND target_id IN "
+                "(SELECT id FROM nodes WHERE node_type = ?)",
+                (EdgeType.IMPORTS_FROM.value, file_path, NodeType.EXTERNAL.value),
+            )
+
+    def external_imports(self, file_path: str) -> list[str]:
+        """Files a file imports that exist on disk but outside the index.
+
+        External nodes hang off the importing *file*, so this is the boundary
+        report for any chunk that file contains.
+        """
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT t.qualified_name FROM edges e "
+                "JOIN nodes s ON s.id = e.source_id "
+                "JOIN nodes t ON t.id = e.target_id "
+                "WHERE s.qualified_name = ? AND e.edge_type = ? AND t.node_type = ?",
+                (file_path, EdgeType.IMPORTS_FROM.value, NodeType.EXTERNAL.value),
+            ).fetchall()
+        return sorted(row[0] for row in rows)
+
+    def find_indexed_module(self, module: str) -> str | None:
+        """Path of an indexed file for a dotted module, from any repo in the graph.
+
+        The disk resolver only searches the importing file's own repo, so an
+        import that crosses into another indexed repo resolves here instead:
+        match a file whose path ends in ``a/b/c.py`` or ``a/b/c/__init__.py``.
+        Returns None unless exactly one file matches — an ambiguous name (the
+        same module path in two repos) stays quiet rather than guessing.
+        """
+        if not module:
+            return None
+        rel = "/".join(module.split("."))
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT qualified_name FROM nodes WHERE node_type = ? "
+                "AND (file_path LIKE ? OR file_path LIKE ?) LIMIT 2",
+                (NodeType.FILE.value, f"%/{rel}.py", f"%/{rel}/__init__.py"),
+            ).fetchall()
+        return rows[0][0] if len(rows) == 1 else None
+
     def close(self) -> None:
         if self._db:
             self._db.close()
@@ -296,6 +395,67 @@ class CallGraph:
 
 
 # --- Python-specific call/import extraction ---
+
+
+@lru_cache(maxsize=256)
+def _site_packages_dirs(repo_root: Path) -> tuple[Path, ...]:
+    """site-packages directories of the virtualenvs belonging to a repo.
+
+    An installed dependency's real source already sits on disk, so an import
+    that leaves the repo can still be pointed at actual code. Looks at the repo's
+    own ``.venv``/``venv`` and at an active ``VIRTUAL_ENV``.
+    """
+    candidates = [repo_root / ".venv", repo_root / "venv"]
+    active = os.environ.get("VIRTUAL_ENV")
+    if active:
+        candidates.append(Path(active))
+    dirs: list[Path] = []
+    for venv in candidates:
+        # posix: lib/pythonX.Y/site-packages, windows: Lib/site-packages
+        dirs.extend(d for d in venv.glob("lib/*/site-packages") if d.is_dir())
+        win = venv / "Lib" / "site-packages"
+        if win.is_dir():
+            dirs.append(win)
+    return tuple(dict.fromkeys(dirs))
+
+
+def _repo_root(file_path: Path) -> Path:
+    """Nearest .git ancestor of a file, or its import root if it isn't in a repo."""
+    for parent in file_path.parents:
+        if (parent / ".git").exists():
+            return parent
+    return find_import_root(file_path)
+
+
+def _installed_module_file(importing_path: Path, module: str) -> Path | None:
+    """Resolve a module to an installed dependency's source file, if present."""
+    if not module or module.split(".")[0] in sys.stdlib_module_names:
+        return None
+    for site_dir in _site_packages_dirs(_repo_root(importing_path)):
+        resolved = resolve_module_file(site_dir / "__main__.py", module, 0, site_dir)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _resolve_module(
+    importing_path: Path,
+    module: str,
+    level: int,
+    import_root: Path,
+    graph: CallGraph,
+) -> str | None:
+    """File a module resolves to: on disk in this repo first, then across repos.
+
+    A relative import can never leave its own package, so it is never looked up
+    across repos.
+    """
+    resolved = resolve_module_file(importing_path, module, level, import_root)
+    if resolved is not None:
+        return str(resolved)
+    if level > 0:
+        return None
+    return graph.find_indexed_module(module)
 
 
 def build_nodes_for_python_file(
@@ -400,16 +560,32 @@ def link_python_file_imports(
         modules = [rec.module]
         if rec.symbol is not None:
             modules.append(f"{rec.module}.{rec.symbol}" if rec.module else rec.symbol)
+        resolved_any = False
         for module in modules:
-            resolved = resolve_module_file(file_path, module, rec.level, import_root)
-            if resolved is None:
+            target = _resolve_module(file_path, module, rec.level, import_root, graph)
+            if target is None:
                 continue
-            target = str(resolved)
+            resolved_any = True
             if target in linked_targets:
                 continue
             linked_targets.add(target)
             if graph.has_node(target):
                 graph.add_edge(fpath_str, target, EdgeType.IMPORTS_FROM)
+
+        if resolved_any or rec.level > 0:
+            continue
+        # The import left the indexed code. If it lands in an installed
+        # dependency whose source is on disk, record the boundary and where that
+        # code is, so the agent can see the edge of what we indexed.
+        external = _installed_module_file(file_path, rec.module)
+        if external is None:
+            continue
+        ext_path = str(external)
+        if ext_path in linked_targets:
+            continue
+        linked_targets.add(ext_path)
+        graph.add_node(ext_path, NodeType.EXTERNAL, ext_path)
+        graph.add_edge(fpath_str, ext_path, EdgeType.IMPORTS_FROM)
 
     # Cross-file CALLS edges to imported functions.
     _extract_cross_file_calls(root, source, fpath_str, import_table, graph, file_path, import_root)
@@ -480,7 +656,9 @@ def _extract_cross_file_calls(
                 continue
             if graph.has_node(f"{file_path}::{call_name}"):
                 continue  # local definition shadows the import
-            resolved = resolve_module_file(importing_path, rec.module, rec.level, import_root)
+            resolved = _resolve_module(
+                importing_path, rec.module, rec.level, import_root, graph
+            )
             if resolved is None:
                 continue
             target = f"{resolved}::{rec.symbol}"
@@ -503,7 +681,9 @@ def _extract_cross_file_calls(
                     module = f"{rec.module}.{rec.symbol}"  # from pkg import sub; sub.f()
                 else:
                     module = rec.symbol  # from . import sub; sub.f()
-                resolved = resolve_module_file(importing_path, module, rec.level, import_root)
+                resolved = _resolve_module(
+                    importing_path, module, rec.level, import_root, graph
+                )
                 if resolved is None:
                     break
                 target = f"{resolved}::{remaining[0]}"
