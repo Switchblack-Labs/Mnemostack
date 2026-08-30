@@ -81,6 +81,22 @@ def index_directory(
     for f in py_files:
         link_python_file_imports(f, graph=graph)
 
+    # Repos are indexed one call at a time, so files indexed earlier may have
+    # imports that only now resolve — into this repo, or into a dependency of it.
+    # Re-link them and drop their stale boundary edges, otherwise a cross-repo
+    # link would exist only when the repos happened to be indexed in the right
+    # order. ponytail: re-parses every previously indexed Python file; batch by
+    # unresolved-import bookkeeping if index time on many repos starts to hurt.
+    indexed_here = {str(f) for f in py_files}
+    for path_str in graph.python_files():
+        if path_str in indexed_here:
+            continue
+        other = Path(path_str)
+        if not other.is_file():
+            continue
+        graph.clear_external_imports(path_str)
+        link_python_file_imports(other, graph=graph)
+
     if not all_chunks:
         return 0
 

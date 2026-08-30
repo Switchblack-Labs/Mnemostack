@@ -330,6 +330,29 @@ class CallGraph:
             ).fetchone()
         return row[0] if row else None
 
+    def python_files(self) -> list[str]:
+        """Every indexed Python file, by path."""
+        with _graph_lock:
+            rows = self.db.execute(
+                "SELECT file_path FROM nodes WHERE node_type = ? AND file_path LIKE '%.py'",
+                (NodeType.FILE.value,),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def clear_external_imports(self, file_path: str) -> None:
+        """Drop a file's boundary edges, before its imports are resolved again.
+
+        A dependency that was outside the index can be indexed later; without
+        this the stale boundary would keep claiming code we can now see.
+        """
+        with _graph_lock:
+            self.db.execute(
+                "DELETE FROM edges WHERE edge_type = ? AND source_id = "
+                "(SELECT id FROM nodes WHERE qualified_name = ?) AND target_id IN "
+                "(SELECT id FROM nodes WHERE node_type = ?)",
+                (EdgeType.IMPORTS_FROM.value, file_path, NodeType.EXTERNAL.value),
+            )
+
     def external_imports(self, file_path: str) -> list[str]:
         """Files a file imports that exist on disk but outside the index.
 

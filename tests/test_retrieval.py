@@ -628,6 +628,55 @@ class TestCrossFileLinking:
         fts_idx.close()
 
 
+    def test_indexing_a_repo_relinks_repos_indexed_before_it(
+        self, tmp_store, shared_db, graph, monkeypatch
+    ):
+        """Repo A indexed first, then repo B it depends on: A's import into B
+        must become a real edge, and A's boundary claim must be dropped."""
+        import mnemostack.core.retrieval.indexer as indexer_mod
+        from mnemostack.core.retrieval.indexer import index_directory
+
+        faiss_idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
+        fts_idx = FTSIndex(store_dir=tmp_store, db=shared_db)
+
+        repo_a = tmp_store / "work" / "service"
+        repo_b = tmp_store / "elsewhere" / "checkout"
+        (repo_a / ".git").mkdir(parents=True)
+        (repo_b / ".git").mkdir(parents=True)
+        # The same dependency is also installed in A's venv, so before B is
+        # indexed the import is a real boundary rather than nothing at all.
+        for pkg in (
+            repo_a / ".venv" / "lib" / "python3.12" / "site-packages" / "shared_lib",
+            repo_b / "shared_lib",
+        ):
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("")
+            (pkg / "util.py").write_text("def helper():\n    return 1\n")
+        main = repo_a / "main.py"
+        main.write_text("from shared_lib.util import helper\n\ndef run():\n    helper()\n")
+
+        def fake_embed(texts):
+            rng = np.random.default_rng(len(texts))
+            return rng.standard_normal((len(texts), 4)).astype(np.float32)
+
+        monkeypatch.setattr(indexer_mod, "embed_texts", fake_embed)
+
+        index_directory(root=repo_a, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        assert graph.external_imports(str(main)), "installed dependency not seen as boundary"
+
+        index_directory(root=repo_b, faiss_idx=faiss_idx, fts_idx=fts_idx, graph=graph)
+        imports = graph.get_neighbors(
+            str(main), hops=1, direction="outgoing", edge_types=(EdgeType.IMPORTS_FROM,)
+        )
+        assert str(repo_b / "shared_lib" / "util.py") in imports, (
+            "import did not re-link into the repo indexed afterwards"
+        )
+        assert graph.external_imports(str(main)) == [], "stale boundary edge kept"
+
+        faiss_idx.close()
+        fts_idx.close()
+
+
 # --- Ranker Tests ---
 
 
