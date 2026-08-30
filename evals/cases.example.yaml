@@ -1,0 +1,54 @@
+# Retrieval quality cases. Each case is a question and a fragment of the
+# qualified name of the chunk that should answer it.
+#
+# These two sets were used to tune ranking. The holdout set was written after
+# the parameters were chosen and never used to pick a value; keep that split if
+# you tune anything, or the numbers will only prove the tuning fit itself.
+#
+# They assume two checkouts indexed together. Point --root at your own and
+# rewrite the cases: the runner cares about the format, not these paths.
+#   python: mnemostack/core   javascript: a small React app
+
+tuning:
+  - query: the react component that renders the playground editor
+    expect: "Playground.jsx::Playground"
+  - query: landing page hero section
+    expect: "Landing.jsx::Landing"
+  - query: debounce file system events before reindexing
+    expect: "file_watcher.py::_DebouncedHandler"
+  - query: resolve a python import to a file on disk
+    expect: "import_resolver.py::resolve_module_file"
+  - query: merge two ranked result lists
+    expect: "ranker.py::reciprocal_rank_fusion"
+  - query: consolidate session memory using an llm
+    expect: "llm_consolidator.py"
+  - query: exponential decay score based on how recently a file changed
+    expect: "ranker.py::compute_recency_score"
+  - query: store vectors and search them with an index
+    expect: "faiss_index.py"
+  - query: resolve a javascript import through node_modules
+    expect: "js_graph.py::find_js_package_entry"
+  - query: skip directories like node_modules when indexing
+    expect: "constants.py"
+
+holdout:
+  - query: remove a file's chunks from the search index
+    expect: "faiss_index.py::FaissIndex.remove_by_file"
+  - query: walk the graph to find neighbouring nodes
+    expect: "call_graph.py::CallGraph.get_neighbors"
+  - query: split a source file into chunks by function
+    expect: "ast_chunker.py"
+  - query: read configuration from a yaml file
+    expect: "settings.py"
+  - query: tool an agent calls to search the codebase
+    expect: "tools.py::query_codebase"
+  - query: save and load session decisions and constraints
+    expect: "memory_store.py"
+  - query: navigation bar with links between pages
+    expect: "Layout.jsx"
+  - query: documentation page content
+    expect: "Docs.jsx"
+  - query: turn a dotted module name into a path
+    expect: "import_resolver.py::resolve_module_file"
+  - query: build nodes for a typescript file
+    expect: "js_graph.py::build_nodes_for_js_file"

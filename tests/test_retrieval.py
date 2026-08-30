@@ -27,7 +27,7 @@ from mnemostack.core.retrieval.call_graph import (
     NodeType,
     build_graph_for_python_file,
 )
-from mnemostack.core.retrieval.faiss_index import FaissIndex, create_chunks_db
+from mnemostack.core.retrieval.faiss_index import FaissIndex
 from mnemostack.core.retrieval.fts_index import FTSIndex
 from mnemostack.core.retrieval.ranker import (
     RankedResult,
@@ -36,41 +36,6 @@ from mnemostack.core.retrieval.ranker import (
     reciprocal_rank_fusion,
     rerank,
 )
-
-# --- Fixtures ---
-
-
-@pytest.fixture
-def tmp_store(tmp_path):
-    """Provides a temporary store directory."""
-    return tmp_path / "store"
-
-
-@pytest.fixture
-def shared_db(tmp_store):
-    """Shared SQLite connection for FAISS + FTS."""
-    return create_chunks_db(tmp_store)
-
-
-@pytest.fixture
-def faiss_idx(shared_db, tmp_store):
-    idx = FaissIndex(store_dir=tmp_store, dimension=4, db=shared_db)
-    yield idx
-    idx.close()
-
-
-@pytest.fixture
-def fts_idx(shared_db, tmp_store):
-    idx = FTSIndex(store_dir=tmp_store, db=shared_db)
-    yield idx
-    idx.close()
-
-
-@pytest.fixture
-def graph(tmp_store):
-    g = CallGraph(store_dir=tmp_store)
-    yield g
-    g.close()
 
 
 def _make_chunks(file_path: str, names: list[str], mtime: float = 0.0) -> list[Chunk]:
@@ -1281,7 +1246,7 @@ class TestRepoTagging:
         # add_node's INSERT doesn't hit "no such column".
         import sqlite3
 
-        from mnemostack.core.retrieval.call_graph import CallGraph, NodeType, _repo_of
+        from mnemostack.core.retrieval.call_graph import NodeType, _repo_of
 
         con = sqlite3.connect(str(tmp_path / "graph.db"))
         con.executescript(
