@@ -262,8 +262,6 @@ def _sanitize_fts_query(query: str) -> str:
     # Strip existing quotes to avoid double-quoting
     cleaned = query.replace('"', " ")
     tokens = cleaned.split()
-    if not tokens:
-        return query
     # Under OR, a word carrying no information about the question still pulls in
     # every chunk that happens to contain it, so drop the ones a code question is
     # never really asking about. A query left with nothing has no keyword signal
