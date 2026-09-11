@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from mnemostack.core.retrieval.import_resolver import (
     ImportRecord,
-    build_import_table,
     extract_imports,
     find_import_root,
+    import_table_from_records,
     resolve_module_file,
 )
 
@@ -75,7 +75,7 @@ class TestExtractImports:
         assert r.module == "pkg.mod"
 
     def test_wildcard_import_excluded_from_table(self):
-        table = build_import_table(b"from a.b import *\n", importing_file=None)  # type: ignore[arg-type]
+        table = import_table_from_records(extract_imports(b"from a.b import *\n"))  # type: ignore[arg-type]
         assert table == {}
 
     def test_module_name_not_treated_as_symbol(self):
@@ -113,56 +113,41 @@ class TestResolveModuleFile:
 
     def test_absolute_import_resolves_to_module(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
-        resolved = resolve_module_file(
-            importing_file=sub / "deep.py", module="topkg.util", level=0
-        )
+        resolved = resolve_module_file(importing_file=sub / "deep.py", module="topkg.util", level=0)
         assert resolved == pkg / "util.py"
 
     def test_absolute_import_resolves_to_package_init(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
-        resolved = resolve_module_file(
-            importing_file=pkg / "util.py", module="topkg.sub", level=0
-        )
+        resolved = resolve_module_file(importing_file=pkg / "util.py", module="topkg.sub", level=0)
         assert resolved == sub / "__init__.py"
 
     def test_relative_import_submodule(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
         # In topkg/util.py: `from .sub import deep`  (level 1, module "sub")
-        resolved = resolve_module_file(
-            importing_file=pkg / "util.py", module="sub.deep", level=1
-        )
+        resolved = resolve_module_file(importing_file=pkg / "util.py", module="sub.deep", level=1)
         assert resolved == sub / "deep.py"
 
     def test_relative_import_parent_package(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
         # In topkg/sub/deep.py: `from ..util import helper` (level 2, module "util")
-        resolved = resolve_module_file(
-            importing_file=sub / "deep.py", module="util", level=2
-        )
+        resolved = resolve_module_file(importing_file=sub / "deep.py", module="util", level=2)
         assert resolved == pkg / "util.py"
 
     def test_relative_bare_dot_resolves_package_init(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
         # `from . import deep` in topkg/sub/deep.py -> the sub package's __init__.
-        resolved = resolve_module_file(
-            importing_file=sub / "deep.py", module="", level=1
-        )
+        resolved = resolve_module_file(importing_file=sub / "deep.py", module="", level=1)
         assert resolved == sub / "__init__.py"
 
     def test_unresolvable_external_module_returns_none(self, tmp_path):
         root, pkg, sub = self._make_pkg(tmp_path)
-        assert (
-            resolve_module_file(
-                importing_file=pkg / "util.py", module="numpy", level=0
-            )
-            is None
-        )
+        assert resolve_module_file(importing_file=pkg / "util.py", module="numpy", level=0) is None
 
 
 class TestBuildImportTable:
     def test_table_binds_local_names(self):
         src = b"from a.b import c as d\nimport e.f as g\nfrom h import i\n"
-        table = build_import_table(src, importing_file=None)  # type: ignore[arg-type]
+        table = import_table_from_records(extract_imports(src))  # type: ignore[arg-type]
         assert set(table) == {"d", "g", "i"}
         assert table["d"].symbol == "c"
         assert table["g"].symbol is None and table["g"].module == "e.f"
@@ -170,5 +155,5 @@ class TestBuildImportTable:
 
     def test_later_binding_wins(self):
         src = b"from a import x\nfrom b import x\n"
-        table = build_import_table(src, importing_file=None)  # type: ignore[arg-type]
+        table = import_table_from_records(extract_imports(src))  # type: ignore[arg-type]
         assert table["x"].module == "b"

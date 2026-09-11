@@ -10,7 +10,10 @@ import argparse
 import sys
 from pathlib import Path
 
-SUBCOMMANDS = {"upgrade-check", "serve"}
+# "serve" is not listed: bare `mnemostack` already starts the server, and
+# having it match here made it fall through every branch to run() while
+# silently discarding whatever arguments followed it.
+SUBCOMMANDS = {"upgrade-check"}
 
 
 def _fmt(impacts, repo: Path) -> list[str]:
