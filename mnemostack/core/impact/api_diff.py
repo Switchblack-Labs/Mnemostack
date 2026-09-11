@@ -116,10 +116,20 @@ def fqn_index(graph: CallGraph) -> dict[str, str]:
 
 
 def changed_nodes(graph: CallGraph, changes: list[ApiChange]) -> list[tuple[str, ApiChange]]:
-    """Pair each change with the graph node it names, dropping unindexed ones.
+    """Pair each change with the graph node it names, dropping unjoined ones.
 
-    A change with no node is normal, not an error: the graph only covers repos
+    Usually a change with no node is uninteresting: the graph only covers repos
     that were indexed, and a package can break an object nobody here imports.
+
+    OBJECT_REMOVED is the exception, and it is the severe one. A deleted object
+    has no node at HEAD, and the consumer's edge to it was already dropped at
+    link time for want of a target, so nothing here can find its callers. The
+    fix is not in this function: index the library at the ref the consumer
+    currently resolves against, not at HEAD. Then the removed symbol still has
+    a node, the consumer's edges land on it, and the deletion reports like any
+    other change. Until that is wired up, deletions are found by griffe and
+    then silently lost here, so callers of this must not read an empty result
+    as "nothing breaks".
     """
     index = fqn_index(graph)
     return [(index[c.fqn], c) for c in changes if c.fqn in index]
