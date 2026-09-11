@@ -53,9 +53,13 @@ _TRANSMISSION: dict[tuple[str, RefKind], Severity] = {
     # Subclassing it.
     ("OBJECT_REMOVED", RefKind.SUBCLASS): Severity.BREAK,
     ("OBJECT_CHANGED_KIND", RefKind.SUBCLASS): Severity.BREAK,
-    # The subclass still imports and still runs, but every member it inherited
-    # from the dropped base is gone and nothing at the subclass site says so.
-    ("CLASS_REMOVED_BASE", RefKind.SUBCLASS): Severity.BREAK,
+    # The subclass loses whatever it inherited from the dropped base, but only
+    # breaks if it used one of those members, which is a hop further than a
+    # source line shows. Measured on real code this was the single loudest and
+    # least useful finding: pydantic 1 to 2 drops an internal `Representation`
+    # mixin from BaseModel, and grading that BREAK shouts at every
+    # `class X(BaseModel)` in the repo about something almost none of them use.
+    ("CLASS_REMOVED_BASE", RefKind.SUBCLASS): Severity.REVIEW,
     # A base method's signature moved under an override that did not. The
     # override is now called with arguments it does not accept.
     ("PARAMETER_ADDED_REQUIRED", RefKind.SUBCLASS): Severity.REVIEW,

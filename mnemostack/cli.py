@@ -17,16 +17,32 @@ SUBCOMMANDS = {"upgrade-check"}
 
 
 def _fmt(impacts) -> list[str]:
-    lines = []
+    """Group by the change, list where it lands.
+
+    One API change touching twenty classes is one thing to think about and
+    twenty places to look, not twenty findings. Printing it per site was
+    measured on real repos and buried three real breakages under twenty-two
+    repetitions of a single fact.
+    """
+    grouped: dict[tuple[str, str, str], list] = {}
     for i in impacts:
-        cover = ""
-        if i.site.covered is False:
-            cover = "  (not covered by tests)"
-        elif i.site.covered is True:
-            cover = "  (covered)"
-        lines.append(f"  [{i.severity.value.upper():6}] {i.site.file}:{i.site.line}{cover}")
-        lines.append(f"           {i.change.kind}  {i.change.fqn}")
-        lines.append(f"           {i.site.text}")
+        grouped.setdefault((i.severity.value, i.change.kind, i.change.fqn), []).append(i.site)
+
+    lines = []
+    for (severity, kind, fqn), sites in grouped.items():
+        lines.append(f"  [{severity.upper():6}] {kind}  {fqn}")
+        shown = sites[:5]
+        for site in shown:
+            cover = ""
+            if site.covered is False:
+                cover = "  (not covered by tests)"
+            elif site.covered is True:
+                cover = "  (covered)"
+            lines.append(f"           {site.file}:{site.line}{cover}")
+            lines.append(f"             {site.text}")
+        if len(sites) > len(shown):
+            lines.append(f"           ... and {len(sites) - len(shown)} more")
+        lines.append("")
     return lines
 
 
@@ -68,7 +84,9 @@ def upgrade_check(argv: list[str]) -> int:
         print("\n  Nothing in your code touches what changed.")
         return 0
 
-    print(f"\n  {len(report.impacts)} place(s) in your code touch what changed:\n")
+    places = len(report.impacts)
+    kinds = len({(i.change.kind, i.change.fqn) for i in report.impacts})
+    print(f"\n  {kinds} change(s) reach your code, across {places} place(s):\n")
     print("\n".join(_fmt(report.impacts)))
     return 1 if any(i.severity.value == "break" for i in report.impacts) else 0
 
