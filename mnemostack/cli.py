@@ -16,25 +16,17 @@ from pathlib import Path
 SUBCOMMANDS = {"upgrade-check"}
 
 
-def _fmt(impacts, repo: Path) -> list[str]:
+def _fmt(impacts) -> list[str]:
     lines = []
-    seen = set()
     for i in impacts:
-        key = (i.consumer, i.change.fqn)
-        if key in seen:
-            continue
-        seen.add(key)
-        file_part, _, symbol = i.consumer.partition("::")
-        where = Path(file_part)
-        try:
-            where = where.relative_to(repo)
-        except ValueError:
-            pass
-        lines.append(f"  [{i.severity.value.upper():6}] {where}::{symbol}")
-        detail = f"{i.change.kind}  {i.change.fqn}"
-        lines.append(f"           {detail}")
-        if i.change.old and i.change.new and i.change.old != i.change.new:
-            lines.append(f"           {i.change.old} -> {i.change.new}")
+        cover = ""
+        if i.site.covered is False:
+            cover = "  (not covered by tests)"
+        elif i.site.covered is True:
+            cover = "  (covered)"
+        lines.append(f"  [{i.severity.value.upper():6}] {i.site.file}:{i.site.line}{cover}")
+        lines.append(f"           {i.change.kind}  {i.change.fqn}")
+        lines.append(f"           {i.site.text}")
     return lines
 
 
@@ -50,16 +42,20 @@ def upgrade_check(argv: list[str]) -> int:
     parser.add_argument("--repo", default=".", type=Path)
     args = parser.parse_args(argv)
 
-    from mnemostack.core.impact.upgrade import check_upgrade
+    from mnemostack.core.impact.upgrade import UpgradeError, check_upgrade
 
     repo = args.repo.resolve()
-    report = check_upgrade(
-        repo=repo,
-        package=args.package,
-        to_version=args.to_version,
-        distribution=args.distribution,
-        from_version=args.from_version,
-    )
+    try:
+        report = check_upgrade(
+            repo=repo,
+            package=args.package,
+            to_version=args.to_version,
+            distribution=args.distribution,
+            from_version=args.from_version,
+        )
+    except UpgradeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     dropped = report.total_changes - report.verified_changes
     note = f" ({dropped} unverified dropped)" if dropped else ""
@@ -73,7 +69,7 @@ def upgrade_check(argv: list[str]) -> int:
         return 0
 
     print(f"\n  {len(report.impacts)} place(s) in your code touch what changed:\n")
-    print("\n".join(_fmt(report.impacts, repo)))
+    print("\n".join(_fmt(report.impacts)))
     return 1 if any(i.severity.value == "break" for i in report.impacts) else 0
 
 

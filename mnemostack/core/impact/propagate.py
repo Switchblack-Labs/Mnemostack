@@ -1,21 +1,17 @@
-"""Which symbols break when an API changes.
+"""How much a consumer has to care about a change, given how it uses the symbol.
 
-Deliberately one hop. A breaking change breaks the things that reference the
-changed object directly. Whether it reaches a caller's caller depends on how
-the direct caller is fixed: absorb the change and nothing propagates, re-raise
-or widen its own signature and it does. That is a choice nobody has made yet at
-the time this runs, so walking further produces plausible-looking results that
-are not predictions of anything.
+The mapping below is the part of this project with no published equivalent.
+Tools that diff an API tell you what changed; tools that find references tell
+you where you touch it. Neither says that removing a base class breaks a
+subclass and merely concerns a caller, or that a moved parameter breaks a
+positional call and does nothing to a type annotation.
 
-An earlier design scored paths with a per-hop decay so distant symbols ranked
-lower. That is a way of expressing decreasing confidence, but the confidence
-does not decrease smoothly with distance, it collapses at the first hop. A
-ranking built on it reads as precision the analysis does not have.
-
-What DOES vary, and is modelled here, is the pair of (what changed, how the
-consumer references it). A removed base class breaks a subclass and merely
-concerns a caller. A parameter that moved breaks a positional caller and does
-nothing to a subclass.
+Deliberately one hop. Whether a break reaches a caller's caller depends on how
+the direct caller is fixed, which nobody has decided when this runs, so walking
+further produces plausible output that predicts nothing. The impact-analysis
+literature prunes transitively with equivalence relations instead of truncating;
+that is the better answer and it is not this one. The reason to stop at one hop
+here is actionability: the reader can check a named line in seconds.
 """
 
 from __future__ import annotations
@@ -24,65 +20,60 @@ from dataclasses import dataclass
 from enum import Enum
 
 from mnemostack.core.impact.api_diff import ApiChange
-from mnemostack.core.retrieval.call_graph import CallGraph, EdgeType
+from mnemostack.core.reach import RefKind, Site
 
 
 class Severity(str, Enum):
-    """How much a consumer has to care."""
-
     BREAK = "break"  # will not run, or silently does the wrong thing
     REVIEW = "review"  # still runs, behaviour may differ
-    NONE = "none"  # this reference is unaffected
+    NONE = "none"  # this use is unaffected
 
 
-# (breakage kind, edge type) -> severity. A pair that is absent is NONE, which
-# is the useful half of the table: an added optional parameter never appears
-# here at all because griffe does not report it as a breakage in the first
-# place, and a return type change does not break a subclass that never calls it.
-_TRANSMISSION: dict[tuple[str, EdgeType], Severity] = {
-    # A caller of the changed object.
-    ("OBJECT_REMOVED", EdgeType.CALLS): Severity.BREAK,
-    ("OBJECT_CHANGED_KIND", EdgeType.CALLS): Severity.BREAK,
-    ("PARAMETER_ADDED_REQUIRED", EdgeType.CALLS): Severity.BREAK,
-    ("PARAMETER_REMOVED", EdgeType.CALLS): Severity.BREAK,
-    ("PARAMETER_CHANGED_REQUIRED", EdgeType.CALLS): Severity.BREAK,
-    ("PARAMETER_CHANGED_KIND", EdgeType.CALLS): Severity.BREAK,
-    # Only breaks a caller passing positionally, which this cannot see. Called
-    # out rather than ranked down, because the caller can check it in seconds
+# (breakage kind, how the consumer uses it) -> severity. An absent pair is NONE,
+# and the absences carry as much meaning as the entries: an added optional
+# parameter never appears because griffe does not call it breaking, and a return
+# type change cannot hurt a subclass that never calls the method.
+_TRANSMISSION: dict[tuple[str, RefKind], Severity] = {
+    # Calling the changed symbol.
+    ("OBJECT_REMOVED", RefKind.CALL): Severity.BREAK,
+    ("OBJECT_CHANGED_KIND", RefKind.CALL): Severity.BREAK,
+    ("PARAMETER_ADDED_REQUIRED", RefKind.CALL): Severity.BREAK,
+    ("PARAMETER_REMOVED", RefKind.CALL): Severity.BREAK,
+    ("PARAMETER_CHANGED_REQUIRED", RefKind.CALL): Severity.BREAK,
+    ("PARAMETER_CHANGED_KIND", RefKind.CALL): Severity.BREAK,
+    # Breaks only a caller passing positionally, which the line does not always
+    # reveal. Named rather than ranked down: the reader settles it in seconds
     # and guessing wrong in either direction is worse than asking.
-    ("PARAMETER_MOVED", EdgeType.CALLS): Severity.REVIEW,
-    ("PARAMETER_CHANGED_DEFAULT", EdgeType.CALLS): Severity.REVIEW,
-    ("RETURN_CHANGED_TYPE", EdgeType.CALLS): Severity.REVIEW,
-    ("ATTRIBUTE_CHANGED_TYPE", EdgeType.CALLS): Severity.REVIEW,
-    ("ATTRIBUTE_CHANGED_VALUE", EdgeType.CALLS): Severity.REVIEW,
-    ("CLASS_REMOVED_BASE", EdgeType.CALLS): Severity.REVIEW,
-    # A subclass of the changed object.
-    ("OBJECT_REMOVED", EdgeType.INHERITS): Severity.BREAK,
-    ("OBJECT_CHANGED_KIND", EdgeType.INHERITS): Severity.BREAK,
-    # The subclass keeps working, but every member it inherited from the
-    # dropped base is gone. Nothing at the subclass site says so.
-    ("CLASS_REMOVED_BASE", EdgeType.INHERITS): Severity.BREAK,
-    # A base method signature moved under an override that did not. The
-    # subclass still imports and still runs; it is now called with arguments
-    # its override does not accept.
-    ("PARAMETER_ADDED_REQUIRED", EdgeType.INHERITS): Severity.REVIEW,
-    ("PARAMETER_REMOVED", EdgeType.INHERITS): Severity.REVIEW,
-    ("PARAMETER_CHANGED_KIND", EdgeType.INHERITS): Severity.REVIEW,
-    ("PARAMETER_CHANGED_REQUIRED", EdgeType.INHERITS): Severity.REVIEW,
-    # A symbol named but not called: an annotation, an isinstance check, a
-    # decorator, a value handed to something else.
-    ("OBJECT_REMOVED", EdgeType.REFERENCES): Severity.BREAK,
-    ("OBJECT_CHANGED_KIND", EdgeType.REFERENCES): Severity.BREAK,
-    ("CLASS_REMOVED_BASE", EdgeType.REFERENCES): Severity.REVIEW,
-    # The reference itself keeps working. Whether it breaks depends on whether
-    # whoever receives the value ends up calling it, which is past what this
-    # sees, so it goes in the look-at-this bucket rather than either extreme.
-    ("PARAMETER_ADDED_REQUIRED", EdgeType.REFERENCES): Severity.REVIEW,
-    ("PARAMETER_REMOVED", EdgeType.REFERENCES): Severity.REVIEW,
-    ("PARAMETER_MOVED", EdgeType.REFERENCES): Severity.REVIEW,
-    ("RETURN_CHANGED_TYPE", EdgeType.REFERENCES): Severity.REVIEW,
-    ("ATTRIBUTE_CHANGED_TYPE", EdgeType.REFERENCES): Severity.REVIEW,
-    ("ATTRIBUTE_CHANGED_VALUE", EdgeType.REFERENCES): Severity.REVIEW,
+    ("PARAMETER_MOVED", RefKind.CALL): Severity.REVIEW,
+    ("PARAMETER_CHANGED_DEFAULT", RefKind.CALL): Severity.REVIEW,
+    ("RETURN_CHANGED_TYPE", RefKind.CALL): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_TYPE", RefKind.CALL): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_VALUE", RefKind.CALL): Severity.REVIEW,
+    ("CLASS_REMOVED_BASE", RefKind.CALL): Severity.REVIEW,
+    # Subclassing it.
+    ("OBJECT_REMOVED", RefKind.SUBCLASS): Severity.BREAK,
+    ("OBJECT_CHANGED_KIND", RefKind.SUBCLASS): Severity.BREAK,
+    # The subclass still imports and still runs, but every member it inherited
+    # from the dropped base is gone and nothing at the subclass site says so.
+    ("CLASS_REMOVED_BASE", RefKind.SUBCLASS): Severity.BREAK,
+    # A base method's signature moved under an override that did not. The
+    # override is now called with arguments it does not accept.
+    ("PARAMETER_ADDED_REQUIRED", RefKind.SUBCLASS): Severity.REVIEW,
+    ("PARAMETER_REMOVED", RefKind.SUBCLASS): Severity.REVIEW,
+    ("PARAMETER_CHANGED_KIND", RefKind.SUBCLASS): Severity.REVIEW,
+    ("PARAMETER_CHANGED_REQUIRED", RefKind.SUBCLASS): Severity.REVIEW,
+    # Naming it in an annotation, or mentioning it as a value. Removal breaks
+    # the name outright; a signature change only matters if whatever receives
+    # the value calls it, which is past what a line of source shows.
+    ("OBJECT_REMOVED", RefKind.ANNOTATION): Severity.BREAK,
+    ("OBJECT_REMOVED", RefKind.MENTION): Severity.BREAK,
+    ("OBJECT_CHANGED_KIND", RefKind.ANNOTATION): Severity.REVIEW,
+    ("OBJECT_CHANGED_KIND", RefKind.MENTION): Severity.REVIEW,
+    ("PARAMETER_ADDED_REQUIRED", RefKind.MENTION): Severity.REVIEW,
+    ("PARAMETER_REMOVED", RefKind.MENTION): Severity.REVIEW,
+    ("RETURN_CHANGED_TYPE", RefKind.ANNOTATION): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_TYPE", RefKind.MENTION): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_VALUE", RefKind.MENTION): Severity.REVIEW,
 }
 
 _ORDER = {Severity.BREAK: 0, Severity.REVIEW: 1, Severity.NONE: 2}
@@ -90,67 +81,46 @@ _ORDER = {Severity.BREAK: 0, Severity.REVIEW: 1, Severity.NONE: 2}
 
 @dataclass(frozen=True)
 class Impact:
-    """One consumer symbol affected by one change."""
+    """One place in the user's code affected by one change."""
 
-    consumer: str  # graph node that references the changed object
-    changed: str  # graph node that changed
+    site: Site
     change: ApiChange
-    edge: EdgeType  # how the consumer reaches it
     severity: Severity
-    crosses_repo: bool
 
 
-def impact_of(graph: CallGraph, changed_node: str, change: ApiChange) -> list[Impact]:
-    """Symbols that reference `changed_node`, paired with how much they care.
+def severity_of(change: ApiChange, kind: RefKind) -> Severity:
+    return _TRANSMISSION.get((change.kind, kind), Severity.NONE)
 
-    Incoming edges only. Retrieval traverses in both directions because it wants
-    a neighbourhood; this wants dependents, and following outgoing edges would
-    return the things the changed object itself uses, which are not affected by
-    it changing.
+
+def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
+    """Affected sites, worst first, one entry per place-and-change.
+
+    Uncovered sites sort ahead of covered ones at equal severity. A covered site
+    will fail loudly the moment the upgrade lands, so the test suite already
+    handles it; an uncovered one is the thing nothing else will tell you.
     """
-    out: list[Impact] = []
-    changed_repo = graph.node_repo(changed_node)
-    for edge in (EdgeType.CALLS, EdgeType.INHERITS, EdgeType.REFERENCES):
-        severity = _TRANSMISSION.get((change.kind, edge), Severity.NONE)
-        if severity is Severity.NONE:
-            continue
-        for consumer in graph.get_neighbors(
-            changed_node, hops=1, direction="incoming", edge_types=[edge]
-        ):
-            out.append(
-                Impact(
-                    consumer=consumer,
-                    changed=changed_node,
-                    change=change,
-                    edge=edge,
-                    severity=severity,
-                    crosses_repo=graph.node_repo(consumer) != changed_repo,
-                )
-            )
-    return out
+    by_symbol: dict[str, list[ApiChange]] = {}
+    for change in changes:
+        by_symbol.setdefault(change.fqn.split(".")[-1], []).append(change)
 
-
-def impact_report(graph: CallGraph, changes: list[tuple[str, ApiChange]]) -> list[Impact]:
-    """Every affected symbol for a set of changes, worst first.
-
-    Ordering is severity, then cross-repo before same-repo. A break in another
-    repo is the one nobody is watching: the author of the change does not have
-    that code open, and its tests do not run on this PR.
-    """
-    found = [i for node, change in changes for i in impact_of(graph, node, change)]
-
-    # One consumer can both call a symbol and name it in an annotation, which
-    # produces an Impact per edge type for a single thing the reader has to fix.
-    # Keep the worst, so the report lists each affected symbol once at the
-    # severity that actually matters.
-    worst: dict[tuple[str, str, str], Impact] = {}
-    for impact in found:
-        key = (impact.consumer, impact.changed, impact.change.fqn)
-        current = worst.get(key)
-        if current is None or _ORDER[impact.severity] < _ORDER[current.severity]:
-            worst[key] = impact
+    found: dict[tuple[str, int, str], Impact] = {}
+    for site in sites:
+        leaf = site.symbol.split(".")[-1]
+        for change in by_symbol.get(leaf, ()):
+            severity = severity_of(change, site.kind)
+            if severity is Severity.NONE:
+                continue
+            key = (site.file, site.line, change.fqn)
+            current = found.get(key)
+            if current is None or _ORDER[severity] < _ORDER[current.severity]:
+                found[key] = Impact(site=site, change=change, severity=severity)
 
     return sorted(
-        worst.values(),
-        key=lambda i: (_ORDER[i.severity], not i.crosses_repo, i.consumer),
+        found.values(),
+        key=lambda i: (
+            _ORDER[i.severity],
+            i.site.covered is True,
+            i.site.file,
+            i.site.line,
+        ),
     )
