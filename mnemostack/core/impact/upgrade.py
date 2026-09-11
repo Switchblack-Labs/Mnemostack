@@ -14,7 +14,7 @@ and scanning lines finds more, costs precision, and cannot hang.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import griffe
@@ -31,6 +31,15 @@ class UpgradeError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Deprecation:
+    """A symbol you use that still works, but is marked for removal."""
+
+    symbol: str
+    message: str
+    sites: list[Site]
+
+
+@dataclass(frozen=True)
 class UpgradeReport:
     package: str
     from_version: str
@@ -38,6 +47,7 @@ class UpgradeReport:
     total_changes: int
     verified_changes: int
     impacts: list[Impact]
+    deprecations: list[Deprecation] = field(default_factory=list)
 
 
 def _ensure_pypi_cache() -> None:
@@ -139,6 +149,88 @@ def narrow(impacts: list[Impact]) -> list[Impact]:
     return kept
 
 
+_DEPRECATED_MSG = re.compile(r"deprecated\s*\(\s*['\"](?P<msg>[^'\"]{0,160})")
+_WALK_LIMIT = 20_000
+
+
+def deprecated_symbols(module) -> dict[str, str]:
+    """Dotted path below the package -> the deprecation message, if any.
+
+    Not griffe's `is_deprecated`: it returns False for `@typing_extensions
+    .deprecated`, which is what real packages use. pydantic 2.5 marks `dict`,
+    `json`, `copy` and `parse_obj` that way and griffe reports none of them.
+    The decorator text is populated though, so it is read directly.
+
+    Deprecations are worth surfacing because they are the one thing a green
+    test run actively hides: warnings are suppressed by default, so an upgrade
+    passes CI while quietly loading the debt that detonates at the next major.
+
+    The walk is bounded and tracks visited paths. An earlier traversal of
+    griffe's module tree had neither and wrote 3.1 GB into a user's repository
+    on a package with an import cycle.
+    """
+    found: dict[str, str] = {}
+    seen: set[str] = set()
+    root = module.name
+    stack = [(module, 0)]
+    budget = _WALK_LIMIT
+
+    while stack and budget > 0:
+        obj, depth = stack.pop()
+        budget -= 1
+        try:
+            members = list(obj.members.items())
+        except Exception:
+            continue
+        for name, member in members:
+            if name.startswith("__"):
+                continue
+            try:
+                path = str(member.path)
+            except Exception:
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+
+            # An Alias raises when its target is not in the loaded tree, and it
+            # raises on attribute access rather than at construction, so every
+            # read below has to be guarded. pydantic re-exports pydantic_core,
+            # which is a separate distribution and never resolves.
+            try:
+                text = " ".join(
+                    str(getattr(d, "value", "")) for d in getattr(member, "decorators", [])
+                )
+                kind = str(getattr(member, "kind", "")).lower()
+            except Exception:
+                continue
+
+            if "deprecated" in text:
+                match = _DEPRECATED_MSG.search(text)
+                found[path.removeprefix(f"{root}.")] = match.group("msg") if match else ""
+
+            if depth < 4 and ("class" in kind or "module" in kind):
+                stack.append((member, depth + 1))
+    return found
+
+
+def _public_paths(deprecated: dict[str, str]) -> dict[str, str]:
+    """Keep one path per deprecated thing: the shortest, which is the public one.
+
+    griffe reaches the same class through every module that imports it, so
+    `BaseModel.dict` also appears as `_internal._fields.BaseModel.dict` and
+    thirty other spellings. Reporting all of them turned three deprecated
+    methods into 105 findings for the same three lines of code.
+    """
+    best: dict[tuple[str, str], str] = {}
+    for path, message in deprecated.items():
+        key = (path.split(".")[-1], message)
+        current = best.get(key)
+        if current is None or path.count(".") < current.count("."):
+            best[key] = path
+    return {path: message for (_, message), path in best.items()}
+
+
 def changed_symbols(changes: list[ApiChange], package: str) -> set[str]:
     """Dotted paths below the package, for the symbols that changed."""
     root = package.split(".")[0]
@@ -184,6 +276,18 @@ def check_upgrade(
     if sites is None:
         sites = find_sites(repo, package, changed_symbols(real, package))
 
+    # Deprecations are looked for separately: they are not breaking changes, so
+    # griffe never reports them, and they reach code the diff does not touch.
+    deprecated = _public_paths(deprecated_symbols(target))
+    dep_sites = find_sites(repo, package, set(deprecated)) if deprecated else []
+    by_symbol: dict[str, list[Site]] = {}
+    for site in dep_sites:
+        by_symbol.setdefault(site.symbol, []).append(site)
+    deprecations = [
+        Deprecation(symbol=symbol, message=deprecated[symbol], sites=found)
+        for symbol, found in sorted(by_symbol.items())
+    ]
+
     return UpgradeReport(
         package=package,
         from_version=from_version or "installed",
@@ -191,4 +295,5 @@ def check_upgrade(
         total_changes=len(raw),
         verified_changes=len(real),
         impacts=narrow(impact_report(sites, real)),
+        deprecations=deprecations,
     )
