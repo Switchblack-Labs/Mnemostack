@@ -621,6 +621,46 @@ def _py_node_name(node: Node, source: bytes) -> str:
     return "<anonymous>"
 
 
+_REEXPORT_MAX_HOPS = 4
+
+
+def _follow_reexport(module_file: str, symbol: str, graph: CallGraph) -> str | None:
+    """Resolve a symbol through a package __init__ that only re-exports it.
+
+    ``from pkg import Thing`` resolves to ``pkg/__init__.py``, which for most
+    distributed packages defines nothing itself, it just imports Thing from the
+    module that does. Without this the target node never exists and the call
+    edge is dropped, which is the common case, not an edge case.
+
+    Walks the re-export chain to the file that actually defines the symbol.
+    Returns None if it does not land on a real node, so callers keep whatever
+    target they already had.
+    """
+    path = Path(module_file)
+    seen: set[str] = set()
+    for _ in range(_REEXPORT_MAX_HOPS):
+        # Only a package __init__ re-exports. Anything else defines its symbols,
+        # and if the node is missing there, chasing further would be guessing.
+        if path.name != "__init__.py" or str(path) in seen:
+            return None
+        seen.add(str(path))
+        try:
+            src = path.read_bytes()
+        except OSError:
+            return None
+        rec = import_table_from_records(extract_imports(src)).get(symbol)
+        if rec is None or rec.symbol is None:
+            return None
+        nxt = _resolve_module(path, rec.module, rec.level, find_import_root(path), graph)
+        if nxt is None:
+            return None
+        path, symbol = Path(nxt), rec.symbol
+        target = f"{path}::{symbol}"
+        if graph.has_node(target):
+            return target
+    return None
+
+
 def _extract_cross_file_calls(
     root: Node,
     source: bytes,
@@ -656,12 +696,12 @@ def _extract_cross_file_calls(
                 continue
             if graph.has_node(f"{file_path}::{call_name}"):
                 continue  # local definition shadows the import
-            resolved = _resolve_module(
-                importing_path, rec.module, rec.level, import_root, graph
-            )
+            resolved = _resolve_module(importing_path, rec.module, rec.level, import_root, graph)
             if resolved is None:
                 continue
             target = f"{resolved}::{rec.symbol}"
+            if not graph.has_node(target):
+                target = _follow_reexport(resolved, rec.symbol, graph) or target
             if graph.has_node(target):
                 graph.add_edge(caller, target, EdgeType.CALLS)
         else:
@@ -681,12 +721,12 @@ def _extract_cross_file_calls(
                     module = f"{rec.module}.{rec.symbol}"  # from pkg import sub; sub.f()
                 else:
                     module = rec.symbol  # from . import sub; sub.f()
-                resolved = _resolve_module(
-                    importing_path, module, rec.level, import_root, graph
-                )
+                resolved = _resolve_module(importing_path, module, rec.level, import_root, graph)
                 if resolved is None:
                     break
                 target = f"{resolved}::{remaining[0]}"
+                if not graph.has_node(target):
+                    target = _follow_reexport(resolved, remaining[0], graph) or target
                 if graph.has_node(target):
                     graph.add_edge(caller, target, EdgeType.CALLS)
                 break
