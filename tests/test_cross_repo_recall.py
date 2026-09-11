@@ -30,12 +30,22 @@ from mnemostack.core.retrieval.call_graph import (
 LIB_FILES = {
     "libcore/__init__.py": (
         "from libcore.auth import verify\n"
-        "from libcore.client import BaseHandler, Client\n"
+        "from libcore.client import BaseHandler, Client, Page\n"
         "\n"
         '__all__ = ["verify", "Client", "BaseHandler"]\n'
     ),
     "libcore/auth.py": ("def verify(token):\n    return bool(token)\n"),
     "libcore/client.py": (
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        'PageT = TypeVar("PageT")\n'
+        "\n"
+        "\n"
+        "class Page(Generic[PageT]):\n"
+        "    def items(self):\n"
+        "        return []\n"
+        "\n"
+        "\n"
         "class Client:\n"
         "    def fetch(self, url):\n"
         "        return url\n"
@@ -49,9 +59,13 @@ LIB_FILES = {
 
 SVC_FILES = {
     "app.py": (
+        "from typing import Generic, TypeVar\n"
+        "\n"
         "from libcore.auth import verify\n"
         "from libcore import verify as reexported_verify\n"
-        "from libcore.client import BaseHandler, Client\n"
+        "from libcore.client import BaseHandler, Client, Page\n"
+        "\n"
+        'T = TypeVar("T")\n'
         "\n"
         "\n"
         "def use_direct(token):\n"
@@ -70,6 +84,18 @@ SVC_FILES = {
         "class MyHandler(BaseHandler):\n"
         "    def handle(self, event):\n"
         "        return event\n"
+        "\n"
+        "\n"
+        "class Retrying(MyHandler):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class Boxed(Generic[T]):\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class IntPage(Page[int]):\n"
+        "    pass\n"
     ),
 }
 
@@ -119,9 +145,6 @@ def _has_edge(graph: CallGraph, source: str, target: str, edge_type: EdgeType | 
 def _ground_truth(lib: Path, svc: Path) -> list[tuple[str, str, str, EdgeType | None, bool]]:
     """(pattern, source qname, target qname, edge type, resolves today).
 
-    The subclass row asks for any edge at all: there is no INHERITS type yet, so
-    naming one would be asserting against a mechanism that does not exist.
-
     The last column is per-pattern rather than one recall number on purpose. A
     scalar lets two rows swap states and still read 25%, and it lets a fixed gap
     pass silently against a `>=` bound while the recorded figure goes stale.
@@ -145,7 +168,13 @@ def _ground_truth(lib: Path, svc: Path) -> list[tuple[str, str, str, EdgeType | 
             EdgeType.CALLS,
             False,
         ),
-        ("subclass of imported base", f"{app}::MyHandler", f"{client}::BaseHandler", None, False),
+        (
+            "subclass of imported base",
+            f"{app}::MyHandler",
+            f"{client}::BaseHandler",
+            EdgeType.INHERITS,
+            True,
+        ),
     ]
 
 
@@ -217,3 +246,39 @@ def test_reachability_reaches_symbols_with_no_symbol_edge(two_repos):
     reachable = graph.get_neighbors(str(svc / "app.py"), hops=2)
     assert f"{client}::Client" in reachable
     assert f"{client}::BaseHandler" in reachable
+
+
+def test_inherits_same_file_base(two_repos):
+    """A base defined in the same file resolves without any import machinery."""
+    lib, svc, graph = two_repos
+    app = svc / "app.py"
+    assert _has_edge(graph, f"{app}::Retrying", f"{app}::MyHandler", EdgeType.INHERITS)
+
+
+def test_subscripted_base_resolves_to_the_parent(two_repos):
+    """`class IntPage(Page[int])` inherits from Page, across a repo boundary.
+
+    A subscripted base is a `subscript` node, not an identifier. Skipping those
+    outright would silently drop the parent, and subscripted bases are roughly a
+    fifth of all base positions in typed code.
+    """
+    lib, svc, graph = two_repos
+    assert _has_edge(
+        graph,
+        f"{svc / 'app.py'}::IntPage",
+        f"{lib / 'libcore' / 'client.py'}::Page",
+        EdgeType.INHERITS,
+    )
+
+
+def test_unindexed_base_makes_no_edge(two_repos):
+    """`class Boxed(Generic[T])` gets no parent: typing is not indexed here.
+
+    The point is that an unresolvable base yields nothing rather than a guess.
+    Note this passes whether or not subscripts are unwrapped, which is why the
+    test above exists separately to pin the unwrapping itself.
+    """
+    lib, svc, graph = two_repos
+    boxed = f"{svc / 'app.py'}::Boxed"
+    assert graph.has_node(boxed)
+    assert graph.get_neighbors(boxed, hops=1, edge_types=[EdgeType.INHERITS]) == []

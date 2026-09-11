@@ -29,7 +29,7 @@ Code is a graph, not a bag of text. Any retrieval system that ignores call-graph
 
 **1B — Lightweight Call Graph**
 - 3 node types: File, Function, Class (qualified names: `file_path::ClassName.method_name`)
-- 3 edge types: CALLS, IMPORTS_FROM, CONTAINS
+- 4 edge types: CALLS, IMPORTS_FROM, CONTAINS, INHERITS
 - Stored in SQLite (graph.db)
 - 2-hop BFS expansion on retrieval for cross-file dependency chains
 
