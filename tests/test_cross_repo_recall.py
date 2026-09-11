@@ -491,3 +491,59 @@ def test_guard_does_not_poison_an_unambiguous_receiver(poison):
         f"{lib / 'libcore' / 'client.py'}::Client.fetch",
         EdgeType.CALLS,
     )
+
+
+# --- same-file method calls must follow the receiver, not declaration order --
+
+AMBIGUOUS_FILES = {
+    "ambiguous.py": (
+        "class Alpha:\n"
+        "    def run(self, job):\n"
+        "        return job\n"
+        "\n"
+        "\n"
+        "class Beta:\n"
+        "    def run(self, job):\n"
+        "        return job\n"
+        "\n"
+        "    def outer(self, job):\n"
+        "        return self.run(job)\n"
+        "\n"
+        "\n"
+        "def uses_beta(job):\n"
+        "    b = Beta()\n"
+        "    return b.run(job)\n"
+    ),
+}
+
+
+@pytest.fixture
+def ambiguous(tmp_path: Path):
+    root = _write(tmp_path / "repo", AMBIGUOUS_FILES)
+    graph = CallGraph(store_dir=tmp_path / "store")
+    for rel in AMBIGUOUS_FILES:
+        build_nodes_for_python_file(root / rel, graph=graph)
+    for rel in AMBIGUOUS_FILES:
+        link_python_file_imports(root / rel, graph=graph, import_root=root)
+    yield root, graph
+    graph.close()
+
+
+def test_self_call_picks_the_enclosing_class_not_the_first_one(ambiguous):
+    """`Beta.outer` calling `self.run` must reach Beta.run, never Alpha.run.
+
+    The retired heuristic scanned classes in declaration order and took the
+    first one declaring a method of that name, so this resolved to Alpha.run
+    purely because Alpha is written first.
+    """
+    root, graph = ambiguous
+    f = root / "ambiguous.py"
+    assert _has_edge(graph, f"{f}::Beta.outer", f"{f}::Beta.run", EdgeType.CALLS)
+    assert not _has_edge(graph, f"{f}::Beta.outer", f"{f}::Alpha.run", EdgeType.CALLS)
+
+
+def test_bound_receiver_picks_its_own_class(ambiguous):
+    root, graph = ambiguous
+    f = root / "ambiguous.py"
+    assert _has_edge(graph, f"{f}::uses_beta", f"{f}::Beta.run", EdgeType.CALLS)
+    assert not _has_edge(graph, f"{f}::uses_beta", f"{f}::Alpha.run", EdgeType.CALLS)

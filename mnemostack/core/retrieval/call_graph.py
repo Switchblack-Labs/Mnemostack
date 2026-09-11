@@ -488,7 +488,6 @@ def build_nodes_for_python_file(
 
     # Track defined symbols for CONTAINS edges
     defined_functions: list[str] = []
-    defined_classes: list[str] = []
 
     for child in root.children:
         if child.type == "function_definition":
@@ -503,7 +502,6 @@ def build_nodes_for_python_file(
             class_qname = f"{fpath_str}::{class_name}"
             graph.add_node(class_qname, NodeType.CLASS, fpath_str)
             graph.add_edge(fpath_str, class_qname, EdgeType.CONTAINS)
-            defined_classes.append(class_name)
 
             # Methods
             body = child.child_by_field_name("body")
@@ -516,7 +514,7 @@ def build_nodes_for_python_file(
                         graph.add_edge(class_qname, mqname, EdgeType.CONTAINS)
 
     # Same-file call sites (targets are defined in this file, so they exist now).
-    _extract_python_calls(root, source, fpath_str, defined_functions, defined_classes, graph)
+    _extract_python_calls(root, source, fpath_str, defined_functions, graph)
 
     graph.commit()
     return graph
@@ -1016,7 +1014,6 @@ def _extract_python_calls(
     source: bytes,
     file_path: str,
     defined_functions: list[str],
-    defined_classes: list[str],
     graph: CallGraph,
 ) -> None:
     """Walk the AST to find function call sites and add CALLS edges."""
@@ -1035,20 +1032,16 @@ def _extract_python_calls(
         if not caller:
             continue
 
-        # If the called function is defined in this file, add a CALLS edge
-        # Simple name match (doesn't resolve imports — that's a static analysis problem)
+        # A same-file call by plain name. Imports are resolved later, in the
+        # link phase, once every file's nodes exist.
         if call_name in defined_functions:
-            target_qname = f"{file_path}::{call_name}"
-            graph.add_edge(caller, target_qname, EdgeType.CALLS)
-        elif "." in call_name:
-            # Method call like self.method() or obj.method()
-            parts = call_name.split(".")
-            method = parts[-1]
-            for cls in defined_classes:
-                candidate = f"{file_path}::{cls}.{method}"
-                if graph.has_node(candidate):
-                    graph.add_edge(caller, candidate, EdgeType.CALLS)
-                    break
+            graph.add_edge(caller, f"{file_path}::{call_name}", EdgeType.CALLS)
+
+        # Method calls are deliberately NOT handled here. This used to take the
+        # first class in the file declaring a method of that name, which is only
+        # right when exactly one class declares it. Two classes with a `run` and
+        # the call landed on whichever was written first, regardless of the
+        # receiver. The link phase resolves the receiver's class instead.
 
 
 def _find_enclosing_function(node: Node, source: bytes, file_path: str) -> str | None:
