@@ -632,18 +632,29 @@ def _follow_reexport(module_file: str, symbol: str, graph: CallGraph) -> str | N
     module that does. Without this the target node never exists and the call
     edge is dropped, which is the common case, not an edge case.
 
-    Walks the re-export chain to the file that actually defines the symbol.
-    Returns None if it does not land on a real node, so callers keep whatever
-    target they already had.
+    Follows the explicit top-level re-export idiom only, including renames
+    (``from .impl import Thing as Other``) and relative imports. Star re-exports
+    (``from .core import *``) and imports nested in ``try``/``if TYPE_CHECKING``
+    blocks are not followed, because extract_imports does not record them. Those
+    miss silently rather than resolving to something wrong.
+
+    Returns None if the chain does not land on a real node, so callers keep
+    whatever target they already had.
+
+    ponytail: re-reads and re-parses the __init__ on every hop of every
+    unresolved call site, no caching. Free on ordinary files (the __init__.py
+    name check below rejects them before any IO) and unmeasurable on a normal
+    repo, but a hub-style __init__ costs ~6ms per hop, and a consumer with
+    thousands of call sites into one measured 3.7x slower to link. Cache the
+    import table on (path, mtime) if indexing a hub library starts to hurt.
     """
     path = Path(module_file)
-    seen: set[str] = set()
     for _ in range(_REEXPORT_MAX_HOPS):
         # Only a package __init__ re-exports. Anything else defines its symbols,
         # and if the node is missing there, chasing further would be guessing.
-        if path.name != "__init__.py" or str(path) in seen:
+        # This also bounds cycles: a chain that loops burns hops and gives up.
+        if path.name != "__init__.py":
             return None
-        seen.add(str(path))
         try:
             src = path.read_bytes()
         except OSError:
@@ -700,8 +711,10 @@ def _extract_cross_file_calls(
             if resolved is None:
                 continue
             target = f"{resolved}::{rec.symbol}"
-            if not graph.has_node(target):
-                target = _follow_reexport(resolved, rec.symbol, graph) or target
+            if not graph.has_node(target) and (
+                followed := _follow_reexport(resolved, rec.symbol, graph)
+            ):
+                target = followed
             if graph.has_node(target):
                 graph.add_edge(caller, target, EdgeType.CALLS)
         else:
@@ -725,8 +738,10 @@ def _extract_cross_file_calls(
                 if resolved is None:
                     break
                 target = f"{resolved}::{remaining[0]}"
-                if not graph.has_node(target):
-                    target = _follow_reexport(resolved, remaining[0], graph) or target
+                if not graph.has_node(target) and (
+                    followed := _follow_reexport(resolved, remaining[0], graph)
+                ):
+                    target = followed
                 if graph.has_node(target):
                     graph.add_edge(caller, target, EdgeType.CALLS)
                 break
