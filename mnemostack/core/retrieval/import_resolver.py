@@ -216,8 +216,3 @@ def import_table_from_records(records: list[ImportRecord]) -> dict[str, ImportRe
             continue
         table[rec.local_name] = rec
     return table
-
-
-def build_import_table(source: bytes, importing_file: Path) -> dict[str, ImportRecord]:
-    """Parse a source buffer and return its bound-name -> import mapping."""
-    return import_table_from_records(extract_imports(source))
