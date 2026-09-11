@@ -389,3 +389,105 @@ def test_rebound_and_factory_receivers_make_no_edge(scoping):
     scope, client = svc / "scoping.py", lib / "libcore" / "client.py"
     for caller in ("rebinds", "from_a_factory"):
         assert not _has_edge(graph, f"{scope}::{caller}", f"{client}::Client.fetch", EdgeType.CALLS)
+
+
+# --- shapes the conflict guard must poison, found in litellm by review -------
+
+POISON_FILES = {
+    "poison.py": (
+        "from libcore.client import BaseHandler, Client\n"
+        "\n"
+        "\n"
+        "def branchy_dispatch(kind, url):\n"
+        "    if kind == 'a':\n"
+        "        obj = Client()\n"
+        "    elif kind == 'b':\n"
+        "        obj = external.OtherConfig()\n"
+        "    else:\n"
+        "        obj = registry['fallback']\n"
+        "    return obj.fetch(url)\n"
+        "\n"
+        "\n"
+        "def dict_then_class(resp, url):\n"
+        "    usage = resp['usage']\n"
+        "    if usage is None:\n"
+        "        usage = Client()\n"
+        "    return usage.fetch(url)\n"
+        "\n"
+        "\n"
+        "def loop_target(items, url):\n"
+        "    thing = Client()\n"
+        "    for thing in items:\n"
+        "        pass\n"
+        "    return thing.fetch(url)\n"
+        "\n"
+        "\n"
+        "def outer_from_factory(make, url):\n"
+        "    conn = make()\n"
+        "\n"
+        "    def inner():\n"
+        "        conn = Client()\n"
+        "        return conn\n"
+        "\n"
+        "    return conn.fetch(url)\n"
+        "\n"
+        "\n"
+        "def unambiguous(url):\n"
+        "    ok = Client()\n"
+        "    return ok.fetch(url)\n"
+    ),
+}
+
+
+@pytest.fixture
+def poison(tmp_path: Path):
+    lib = _write(tmp_path / "lib_side" / "libcore_repo", LIB_FILES)
+    svc = _write(tmp_path / "svc_side" / "svc_repo", POISON_FILES)
+
+    graph = CallGraph(store_dir=tmp_path / "store")
+    for root, files in ((lib, LIB_FILES), (svc, POISON_FILES)):
+        for rel in files:
+            build_nodes_for_python_file(root / rel, graph=graph)
+    for root, files in ((lib, LIB_FILES), (svc, POISON_FILES)):
+        for rel in files:
+            link_python_file_imports(root / rel, graph=graph, import_root=root)
+
+    yield lib, svc, graph
+    graph.close()
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "branchy_dispatch",  # one branch resolves, two do not
+        "dict_then_class",  # subscript RHS, then a constructor
+        "loop_target",  # rebound by a for target
+        "outer_from_factory",  # a nested function assigns the same name
+    ],
+)
+def test_unprovable_rebinding_makes_no_edge(poison, caller):
+    """One resolvable constructor must not win the whole function.
+
+    Each of these appears verbatim in real code. Before the conflict guard saw
+    every rebinding, the single resolvable constructor bound the variable for
+    the entire function and the call resolved to it, which is wrong in every
+    branch that assigned something else.
+    """
+    lib, svc, graph = poison
+    assert not _has_edge(
+        graph,
+        f"{svc / 'poison.py'}::{caller}",
+        f"{lib / 'libcore' / 'client.py'}::Client.fetch",
+        EdgeType.CALLS,
+    )
+
+
+def test_guard_does_not_poison_an_unambiguous_receiver(poison):
+    """The guard must not be so eager that it kills the working case."""
+    lib, svc, graph = poison
+    assert _has_edge(
+        graph,
+        f"{svc / 'poison.py'}::unambiguous",
+        f"{lib / 'libcore' / 'client.py'}::Client.fetch",
+        EdgeType.CALLS,
+    )

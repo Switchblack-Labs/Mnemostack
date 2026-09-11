@@ -754,6 +754,35 @@ def _annotation_name(node: Node | None, source: bytes) -> str | None:
     return source[node.start_byte : node.end_byte].decode()
 
 
+def _rebindings_in(body: Node, source: bytes) -> list[tuple[Node | None, str]]:
+    """Every plain-name rebinding in a function body, as (node, variable).
+
+    Node is the assignment, or None for a binding whose shape carries no class
+    at all (a for target, a with alias). Callers must treat None as poisoning
+    the variable: it is a rebinding they cannot prove, not an absence of one.
+
+    Does not descend into nested function, lambda, or class bodies. Those are
+    separate scopes, and an inner assignment leaking out would bind the outer
+    variable to a class it never holds.
+    """
+    found: list[tuple[Node | None, str]] = []
+    stack = list(body.children)
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "lambda", "class_definition"):
+            continue
+        if node.type == "assignment":
+            left = node.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                found.append((node, source[left.start_byte : left.end_byte].decode()))
+        elif node.type in ("for_statement", "with_item"):
+            target = node.child_by_field_name("left") or node.child_by_field_name("alias")
+            if target is not None and target.type == "identifier":
+                found.append((None, source[target.start_byte : target.end_byte].decode()))
+        stack.extend(node.children)
+    return found
+
+
 def _receiver_classes(
     func: Node,
     source: bytes,
@@ -781,6 +810,9 @@ def _receiver_classes(
     def bind(var: str, class_name: str) -> None:
         node = _symbol_node(class_name, file_path, import_table, importing_path, import_root, graph)
         if node is None:
+            # Names a class we cannot resolve. The variable still holds
+            # something, so treat it as unknown rather than as not-assigned.
+            conflicted.add(var)
             return
         if var in bindings and bindings[var] != node:
             # Rebound to a different class inside one function. Which one a call
@@ -808,21 +840,27 @@ def _receiver_classes(
                 bind(source[name_node.start_byte : name_node.end_byte].decode(), ann)
 
     body = func.child_by_field_name("body")
-    for assign in _find_nodes_by_type(body, "assignment") if body else []:
-        left = assign.child_by_field_name("left")
-        if left is None or left.type != "identifier":
+    for node, var in _rebindings_in(body, source) if body else []:
+        if node is None:
+            conflicted.add(var)  # for-target, with-alias: shape we cannot prove
             continue
-        var = source[left.start_byte : left.end_byte].decode()
-        ann = _annotation_name(assign.child_by_field_name("type"), source)
+        ann = _annotation_name(node.child_by_field_name("type"), source)
         if ann:
             bind(var, ann)
             continue
-        right = assign.child_by_field_name("right")
-        if right is None or right.type != "call":
-            continue
-        ctor = right.child_by_field_name("function")
+        right = node.child_by_field_name("right")
+        ctor = (
+            right.child_by_field_name("function")
+            if right is not None and right.type == "call"
+            else None
+        )
         if ctor is not None and ctor.type in ("identifier", "attribute"):
             bind(var, source[ctor.start_byte : ctor.end_byte].decode())
+        else:
+            # A subscript, a bare name, an await, a comprehension, a literal.
+            # The variable holds something this cannot prove, so every binding
+            # for it is now suspect, including one made by an earlier branch.
+            conflicted.add(var)
 
     for var in conflicted:
         bindings.pop(var, None)
@@ -843,6 +881,11 @@ def _receiver_bindings_by_caller(
     Bindings are per function, never per file: the same variable name routinely
     holds different classes in different functions, and a file-wide map would
     cross those over.
+
+    ponytail: walks every function subtree once per file and does a has_node
+    lookup per candidate class, costing about 14% of link time (measured on
+    pydantic, mcp and litellm). Memoise _symbol_node per (file, name) if that
+    ever matters; the answer cannot change within a single link pass.
     """
     out: dict[str, dict[str, str]] = {}
     ambiguous: set[str] = set()
