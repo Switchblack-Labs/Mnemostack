@@ -21,15 +21,17 @@ def site(kind: RefKind, symbol: str = "thing", line: int = 1, covered=None) -> S
     return Site(file="app.py", line=line, symbol=symbol, kind=kind, text="x", covered=covered)
 
 
-def test_removed_base_breaks_a_subclass_but_only_concerns_a_caller():
-    """The distinction that justifies tracking reference kind at all.
+def test_removed_base_is_review_for_everyone():
+    """Measured on real code, and it changed the answer.
 
-    A subclass silently loses every member it inherited. A caller of the class
-    keeps working unless it used one of those members, which the line cannot
-    show, so it is flagged for review rather than called broken.
+    A dropped base only breaks a subclass that used one of its members, which
+    is a hop past what a source line shows. Grading it BREAK made pydantic 1 to
+    2 shout at every `class X(BaseModel)` in a repo because an internal
+    `Representation` mixin disappeared, burying the real findings under a fact
+    the reader already knew.
     """
     removed_base = change("CLASS_REMOVED_BASE")
-    assert severity_of(removed_base, RefKind.SUBCLASS) is Severity.BREAK
+    assert severity_of(removed_base, RefKind.SUBCLASS) is Severity.REVIEW
     assert severity_of(removed_base, RefKind.CALL) is Severity.REVIEW
 
 
