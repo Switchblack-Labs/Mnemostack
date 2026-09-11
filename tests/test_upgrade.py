@@ -235,3 +235,74 @@ def test_pypi_cache_directory_is_created_if_missing(tmp_path, monkeypatch):
     assert not cache.exists()
     _ensure_pypi_cache()
     assert cache.is_dir()
+
+
+# --- deprecations: the thing a green test run hides -------------------------
+
+DEPRECATED_LIB = """
+from typing_extensions import deprecated
+
+
+class Model:
+    @deprecated("The `dict` method is deprecated; use `model_dump` instead.")
+    def dict(self):
+        return {}
+
+    def model_dump(self):
+        return {}
+"""
+
+
+def test_deprecated_symbols_reads_the_decorator_not_griffes_flag(tmp_path: Path):
+    """griffe's own is_deprecated does not see the decorator real packages use.
+
+    It returns False for `@typing_extensions.deprecated`, which is what pydantic
+    marks `dict`, `copy` and `parse_obj` with. The decorator text is populated
+    though, so the message is read from there.
+    """
+    from mnemostack.core.impact.upgrade import deprecated_symbols
+
+    mod = griffe.load("paylib", search_paths=[_write_pkg(tmp_path / "v", DEPRECATED_LIB)])
+    assert mod["Model.dict"].is_deprecated is False, "the flag griffe offers is not usable"
+
+    found = deprecated_symbols(mod)
+    assert "Model.dict" in found
+    assert "model_dump" in found["Model.dict"]
+    assert "Model.model_dump" not in found
+
+
+def test_deprecations_are_deduplicated_to_one_public_path():
+    """griffe reaches a class through every module that imports it.
+
+    Unfiltered, three deprecated methods became 105 findings for the same three
+    lines, because BaseModel is reachable as `_internal._fields.BaseModel` and
+    thirty other spellings.
+    """
+    from mnemostack.core.impact.upgrade import _public_paths
+
+    msg = "use model_dump"
+    collapsed = _public_paths(
+        {
+            "BaseModel.dict": msg,
+            "_internal._fields.BaseModel.dict": msg,
+            "_internal._model_construction.BaseModel.dict": msg,
+        }
+    )
+    assert collapsed == {"BaseModel.dict": msg}
+
+
+def test_a_bounded_walk_survives_an_import_cycle(tmp_path: Path):
+    """The regression that wrote 3.1 GB into a user's repository.
+
+    A module that re-exports its own parent used to generate infinitely
+    lengthening paths. The walk is bounded and tracks what it has seen.
+    """
+    from mnemostack.core.impact.upgrade import deprecated_symbols
+
+    root = tmp_path / "v"
+    pkg = root / "paylib"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from paylib.sub import thing\n")
+    (pkg / "sub" / "__init__.py").write_text("import paylib\n\n\ndef thing():\n    return 1\n")
+
+    assert deprecated_symbols(griffe.load("paylib", search_paths=[root])) == {}
