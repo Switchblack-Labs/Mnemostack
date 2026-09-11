@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import griffe
+import platformdirs
 
 from mnemostack.core.impact.api_diff import ApiChange
 from mnemostack.core.impact.propagate import Impact, impact_report
@@ -39,10 +40,25 @@ class UpgradeReport:
     impacts: list[Impact]
 
 
+def _ensure_pypi_cache() -> None:
+    """Create griffe's download cache directory if it does not exist.
+
+    load_pypi opens a TemporaryDirectory inside platformdirs' griffe cache but
+    never creates it, so on any machine that has not used griffe before, the
+    first run dies with a FileNotFoundError naming a temp path the user has
+    never heard of. That is every new user, and it was CI too.
+    """
+    try:
+        Path(platformdirs.user_cache_dir("griffe")).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # if the cache is unwritable, griffe's own error is the better one
+
+
 def _load(package: str, distribution: str, version: str | None):
     try:
         if version is None:
             return griffe.load(package, allow_inspection=True)
+        _ensure_pypi_cache()
         return griffe.load_pypi(package, distribution, f"=={version}")
     except Exception as exc:  # griffe raises several unrelated types
         target = version or "installed"

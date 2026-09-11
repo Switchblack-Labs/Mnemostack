@@ -215,3 +215,23 @@ def test_check_upgrade_accepts_externally_measured_sites(tmp_path: Path):
     )
     assert report.impacts == []
     assert report.to_version == "1.5.0"
+
+
+def test_pypi_cache_directory_is_created_if_missing(tmp_path, monkeypatch):
+    """The first-run failure that CI caught.
+
+    griffe's load_pypi opens a TemporaryDirectory inside its cache directory
+    but never creates it, so on a machine that has never used griffe the first
+    run dies with a FileNotFoundError naming a temp path the user has never
+    seen. That is every new user.
+    """
+    import platformdirs
+
+    from mnemostack.core.impact.upgrade import _ensure_pypi_cache
+
+    cache = tmp_path / "nested" / "griffe"
+    monkeypatch.setattr(platformdirs, "user_cache_dir", lambda *a, **k: str(cache))
+
+    assert not cache.exists()
+    _ensure_pypi_cache()
+    assert cache.is_dir()
