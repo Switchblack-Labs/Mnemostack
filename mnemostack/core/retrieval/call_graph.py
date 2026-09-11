@@ -1,7 +1,7 @@
 """Lightweight call graph for dependency-aware retrieval.
 
 4 node types: File, Function, Class, External (an installed dependency)
-3 edge types: CALLS, IMPORTS_FROM, CONTAINS
+4 edge types: CALLS, IMPORTS_FROM, CONTAINS, INHERITS
 
 Stored in SQLite. Supports 2-hop BFS expansion for cross-file dependency chains.
 Used to enrich retrieval results with related code that pure similarity would miss.
@@ -87,6 +87,7 @@ class EdgeType(str, Enum):
     CALLS = "calls"
     IMPORTS_FROM = "imports_from"
     CONTAINS = "contains"
+    INHERITS = "inherits"
 
 
 class CallGraph:
@@ -589,6 +590,7 @@ def link_python_file_imports(
 
     # Cross-file CALLS edges to imported functions.
     _extract_cross_file_calls(root, source, fpath_str, import_table, graph, file_path, import_root)
+    _extract_inherits_edges(root, source, fpath_str, import_table, graph, file_path, import_root)
 
     graph.commit()
     return graph
@@ -672,6 +674,110 @@ def _follow_reexport(module_file: str, symbol: str, graph: CallGraph) -> str | N
     return None
 
 
+def _node_for(resolved: str, symbol: str, graph: CallGraph) -> str | None:
+    """Existing node for a symbol in a resolved file, chasing re-exports."""
+    target = f"{resolved}::{symbol}"
+    if graph.has_node(target):
+        return target
+    return _follow_reexport(resolved, symbol, graph)
+
+
+def _resolve_imported_symbol(
+    name: str,
+    import_table: dict[str, ImportRecord],
+    importing_path: Path,
+    import_root: Path,
+    graph: CallGraph,
+) -> str | None:
+    """Node a dotted reference to an imported symbol points at, or None.
+
+      from mod import X;   X      -> resolved(mod)::X
+      import mod [as m];   m.X    -> resolved(mod)::X
+      from pkg import sub; sub.X  -> resolved(pkg.sub)::X
+
+    Longest imported prefix wins for the attribute form. Returns None when the
+    name is not an import, does not resolve to an indexed file, or lands on no
+    real node, so callers never invent an edge.
+    """
+    if "." not in name:
+        rec = import_table.get(name)
+        if rec is None or rec.symbol is None:
+            return None
+        resolved = _resolve_module(importing_path, rec.module, rec.level, import_root, graph)
+        return _node_for(resolved, rec.symbol, graph) if resolved else None
+
+    parts = name.split(".")
+    for i in range(len(parts) - 1, 0, -1):
+        rec = import_table.get(".".join(parts[:i]))
+        if rec is None:
+            continue
+        remaining = parts[i:]
+        if len(remaining) != 1:
+            return None  # only <module>.symbol resolves to a definition
+        if rec.symbol is None:
+            module = rec.module  # import mod [as m]
+        elif rec.module:
+            module = f"{rec.module}.{rec.symbol}"  # from pkg import sub
+        else:
+            module = rec.symbol  # from . import sub
+        resolved = _resolve_module(importing_path, module, rec.level, import_root, graph)
+        return _node_for(resolved, remaining[0], graph) if resolved else None
+    return None
+
+
+def _extract_inherits_edges(
+    root: Node,
+    source: bytes,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    graph: CallGraph,
+    importing_path: Path,
+    import_root: Path,
+) -> None:
+    """Add INHERITS edges from a class to each base class that resolves.
+
+    A base may be defined in the same file, imported from another file, or
+    re-exported through a package __init__. Bases that are expressions rather
+    than plain names (Generic[T], a metaclass keyword, a call) are skipped:
+    nothing static resolves those to a definition.
+
+    Without this a change to a base class propagates to nothing, since a
+    subclass is connected to its parent by no edge at all.
+    """
+    for cls in root.children:
+        if cls.type != "class_definition":
+            continue
+        # Top level only, matching build_nodes_for_python_file. A nested class
+        # has no node of its own, and looking one up by bare name would attach
+        # its bases to an unrelated top-level class that happens to share it.
+        child = f"{file_path}::{_py_node_name(cls, source)}"
+        if not graph.has_node(child):
+            continue
+        supers = cls.child_by_field_name("superclasses")
+        if supers is None:
+            continue
+        for arg in supers.children:
+            head = arg
+            if head.type == "subscript":
+                # Base[int], Request[P, T]: the parent is the subscripted value.
+                # Dropping these would lose a fifth of all bases in typed code.
+                head = head.child_by_field_name("value")
+                if head is None:
+                    continue
+            if head.type not in ("identifier", "attribute"):
+                continue  # metaclass=M, make_base(), *bases: nothing to resolve
+            base = source[head.start_byte : head.end_byte].decode()
+            local = f"{file_path}::{base}"
+            if "." not in base and graph.has_node(local):
+                graph.add_edge(child, local, EdgeType.INHERITS)  # same-file base
+                continue
+            target = _resolve_imported_symbol(
+                base, import_table, importing_path, import_root, graph
+            )
+            if target:
+                graph.add_edge(child, target, EdgeType.INHERITS)
+
+
 def _extract_cross_file_calls(
     root: Node,
     source: bytes,
@@ -699,52 +805,13 @@ def _extract_cross_file_calls(
         caller = _find_enclosing_function(call, source, file_path)
         if not caller:
             continue
-
-        if "." not in call_name:
-            # from mod import func; func() — unless a local def shadows the name.
-            rec = import_table.get(call_name)
-            if rec is None or rec.symbol is None:
-                continue
-            if graph.has_node(f"{file_path}::{call_name}"):
-                continue  # local definition shadows the import
-            resolved = _resolve_module(importing_path, rec.module, rec.level, import_root, graph)
-            if resolved is None:
-                continue
-            target = f"{resolved}::{rec.symbol}"
-            if not graph.has_node(target) and (
-                followed := _follow_reexport(resolved, rec.symbol, graph)
-            ):
-                target = followed
-            if graph.has_node(target):
-                graph.add_edge(caller, target, EdgeType.CALLS)
-        else:
-            # Attribute call x.func() — match the longest imported prefix bound to
-            # a module (import mod) or a submodule (from pkg import sub).
-            parts = call_name.split(".")
-            for i in range(len(parts) - 1, 0, -1):
-                rec = import_table.get(".".join(parts[:i]))
-                if rec is None:
-                    continue
-                remaining = parts[i:]
-                if len(remaining) != 1:
-                    break  # only <module>.function resolves to a definition
-                if rec.symbol is None:
-                    module = rec.module  # import mod [as m]; m.func()
-                elif rec.module:
-                    module = f"{rec.module}.{rec.symbol}"  # from pkg import sub; sub.f()
-                else:
-                    module = rec.symbol  # from . import sub; sub.f()
-                resolved = _resolve_module(importing_path, module, rec.level, import_root, graph)
-                if resolved is None:
-                    break
-                target = f"{resolved}::{remaining[0]}"
-                if not graph.has_node(target) and (
-                    followed := _follow_reexport(resolved, remaining[0], graph)
-                ):
-                    target = followed
-                if graph.has_node(target):
-                    graph.add_edge(caller, target, EdgeType.CALLS)
-                break
+        if "." not in call_name and graph.has_node(f"{file_path}::{call_name}"):
+            continue  # local definition shadows the import
+        target = _resolve_imported_symbol(
+            call_name, import_table, importing_path, import_root, graph
+        )
+        if target:
+            graph.add_edge(caller, target, EdgeType.CALLS)
 
 
 def _extract_python_calls(

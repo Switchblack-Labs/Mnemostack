@@ -415,7 +415,7 @@ WITH Mnemo (turn 200):
 core/
   retrieval/
     ast_chunker.py          — tree-sitter based code chunking
-    call_graph.py           — lightweight dependency graph builder (3 node types, 3 edge types)
+    call_graph.py           — lightweight dependency graph builder (4 node types, 4 edge types)
     faiss_index.py          — FAISS HNSW index management (build, query, incremental update)
     fts_index.py            — FTS5 keyword index (BM25 + Porter stemming)
     ranker.py               — RRF fusion + recency-weighted ranking
