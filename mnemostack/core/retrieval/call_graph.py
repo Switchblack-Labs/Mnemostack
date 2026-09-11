@@ -88,6 +88,11 @@ class EdgeType(str, Enum):
     IMPORTS_FROM = "imports_from"
     CONTAINS = "contains"
     INHERITS = "inherits"
+    # A symbol used without being called: named in a type annotation, passed to
+    # isinstance, applied as a decorator, handed around as a value. Removing
+    # that symbol breaks the reference just as surely as it breaks a call, and
+    # restricting the graph to call sites made all of it invisible.
+    REFERENCES = "references"
 
 
 class CallGraph:
@@ -589,6 +594,7 @@ def link_python_file_imports(
     # Cross-file CALLS edges to imported functions.
     _extract_cross_file_calls(root, source, fpath_str, import_table, graph, file_path, import_root)
     _extract_inherits_edges(root, source, fpath_str, import_table, graph, file_path, import_root)
+    _extract_references(root, source, fpath_str, import_table, graph, file_path, import_root)
 
     graph.commit()
     return graph
@@ -903,6 +909,90 @@ def _receiver_bindings_by_caller(
     for qname in ambiguous:
         out.pop(qname, None)
     return out
+
+
+def _is_call_target(node: Node) -> bool:
+    """Is this identifier the thing being called? Those are CALLS edges already."""
+    parent = node.parent
+    while parent is not None and parent.type == "attribute":
+        node, parent = parent, parent.parent
+    return (
+        parent is not None
+        and parent.type == "call"
+        and parent.child_by_field_name("function") is node
+    )
+
+
+def _is_binding_occurrence(node: Node) -> bool:
+    """Is this identifier introducing a name rather than using one?
+
+    A def/class name and the module list of an import are bindings. Counting
+    them as references would make every import look like a use of the symbol,
+    which is exactly the file-level noise the symbol graph exists to avoid.
+    """
+    parent = node.parent
+    if parent is None:
+        return True
+    if parent.type in ("function_definition", "class_definition"):
+        return parent.child_by_field_name("name") is node
+    while parent is not None:
+        if parent.type in (
+            "import_statement",
+            "import_from_statement",
+            "aliased_import",
+            "future_import_statement",
+        ):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _extract_references(
+    root: Node,
+    source: bytes,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    graph: CallGraph,
+    importing_path: Path,
+    import_root: Path,
+) -> None:
+    """REFERENCES edges for imported symbols used without being called.
+
+    `isinstance(x, Client)`, `def f(c: Client)`, `@retry`, `handler = Client`.
+    Each of these breaks if Client is removed, and none of them is a call, so a
+    call-only graph reports nothing for the single most common breakage kind
+    there is. Griffe says 96.4% of Python breaking changes are removals.
+
+    Only names bound by an import are considered, and each resolves through the
+    same path a call would, so this adds reach without adding guesswork.
+    """
+    for node in _find_nodes_by_type(root, "identifier"):
+        name = source[node.start_byte : node.end_byte].decode()
+        if name not in import_table:
+            continue
+        if _is_binding_occurrence(node) or _is_call_target(node):
+            continue
+
+        # `mod.Thing` in a non-call position: the reference is to Thing, not mod.
+        reference = name
+        parent = node.parent
+        if (
+            parent is not None
+            and parent.type == "attribute"
+            and parent.child_by_field_name("object") is node
+        ):
+            attr = parent.child_by_field_name("attribute")
+            if attr is not None:
+                reference = f"{name}.{source[attr.start_byte : attr.end_byte].decode()}"
+
+        source_node = _find_enclosing_function(node, source, file_path) or file_path
+        if not graph.has_node(source_node):
+            continue
+        target = _resolve_imported_symbol(
+            reference, import_table, importing_path, import_root, graph
+        )
+        if target and target != source_node:
+            graph.add_edge(source_node, target, EdgeType.REFERENCES)
 
 
 def _extract_inherits_edges(

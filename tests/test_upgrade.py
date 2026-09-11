@@ -177,3 +177,49 @@ def test_dependency_surface_registers_symbols(tmp_path):
     assert "paylib.Session" in index
     assert "paylib.Session.send" in index
     graph.close()
+
+
+# --- griffe already filters private symbols ------------------------------
+
+PRIV_V1 = """
+__all__ = ["public_api"]
+
+
+def public_api(x):
+    return _helper(x)
+
+
+def _helper(x, mode="fast"):
+    return x
+"""
+
+PRIV_V2 = """
+__all__ = ["public_api"]
+
+
+def public_api(x, required):
+    return x
+
+
+def _helper(x):
+    return x
+"""
+
+
+def test_griffe_reports_no_breakage_for_private_symbols(tmp_path):
+    """Why there is no severity downgrade for private symbols in this codebase.
+
+    The literature recommends downgrading a break in an underscore-prefixed or
+    non-__all__ symbol, because the library never promised it. AexPy needs that
+    rule since it computes its own diff. griffe does not: it drops private
+    symbols before reporting, so a downgrade rule here could never fire.
+
+    Both functions change signature below and only the public one is reported.
+    If this ever fails, griffe changed and the rule becomes worth adding.
+    """
+    old = griffe.load("paylib", search_paths=[_write_pkg(tmp_path / "v1", PRIV_V1)])
+    new = griffe.load("paylib", search_paths=[_write_pkg(tmp_path / "v2", PRIV_V2)])
+
+    reported = {str(b.as_dict().get("object_path")) for b in griffe.find_breaking_changes(old, new)}
+    assert "paylib.public_api" in reported
+    assert "paylib._helper" not in reported
