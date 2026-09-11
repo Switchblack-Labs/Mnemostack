@@ -69,6 +69,20 @@ _TRANSMISSION: dict[tuple[str, EdgeType], Severity] = {
     ("PARAMETER_REMOVED", EdgeType.INHERITS): Severity.REVIEW,
     ("PARAMETER_CHANGED_KIND", EdgeType.INHERITS): Severity.REVIEW,
     ("PARAMETER_CHANGED_REQUIRED", EdgeType.INHERITS): Severity.REVIEW,
+    # A symbol named but not called: an annotation, an isinstance check, a
+    # decorator, a value handed to something else.
+    ("OBJECT_REMOVED", EdgeType.REFERENCES): Severity.BREAK,
+    ("OBJECT_CHANGED_KIND", EdgeType.REFERENCES): Severity.BREAK,
+    ("CLASS_REMOVED_BASE", EdgeType.REFERENCES): Severity.REVIEW,
+    # The reference itself keeps working. Whether it breaks depends on whether
+    # whoever receives the value ends up calling it, which is past what this
+    # sees, so it goes in the look-at-this bucket rather than either extreme.
+    ("PARAMETER_ADDED_REQUIRED", EdgeType.REFERENCES): Severity.REVIEW,
+    ("PARAMETER_REMOVED", EdgeType.REFERENCES): Severity.REVIEW,
+    ("PARAMETER_MOVED", EdgeType.REFERENCES): Severity.REVIEW,
+    ("RETURN_CHANGED_TYPE", EdgeType.REFERENCES): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_TYPE", EdgeType.REFERENCES): Severity.REVIEW,
+    ("ATTRIBUTE_CHANGED_VALUE", EdgeType.REFERENCES): Severity.REVIEW,
 }
 
 _ORDER = {Severity.BREAK: 0, Severity.REVIEW: 1, Severity.NONE: 2}
@@ -96,7 +110,7 @@ def impact_of(graph: CallGraph, changed_node: str, change: ApiChange) -> list[Im
     """
     out: list[Impact] = []
     changed_repo = graph.node_repo(changed_node)
-    for edge in (EdgeType.CALLS, EdgeType.INHERITS):
+    for edge in (EdgeType.CALLS, EdgeType.INHERITS, EdgeType.REFERENCES):
         severity = _TRANSMISSION.get((change.kind, edge), Severity.NONE)
         if severity is Severity.NONE:
             continue
@@ -124,7 +138,19 @@ def impact_report(graph: CallGraph, changes: list[tuple[str, ApiChange]]) -> lis
     that code open, and its tests do not run on this PR.
     """
     found = [i for node, change in changes for i in impact_of(graph, node, change)]
+
+    # One consumer can both call a symbol and name it in an annotation, which
+    # produces an Impact per edge type for a single thing the reader has to fix.
+    # Keep the worst, so the report lists each affected symbol once at the
+    # severity that actually matters.
+    worst: dict[tuple[str, str, str], Impact] = {}
+    for impact in found:
+        key = (impact.consumer, impact.changed, impact.change.fqn)
+        current = worst.get(key)
+        if current is None or _ORDER[impact.severity] < _ORDER[current.severity]:
+            worst[key] = impact
+
     return sorted(
-        found,
+        worst.values(),
         key=lambda i: (_ORDER[i.severity], not i.crosses_repo, i.consumer),
     )
