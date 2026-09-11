@@ -621,6 +621,57 @@ def _py_node_name(node: Node, source: bytes) -> str:
     return "<anonymous>"
 
 
+_REEXPORT_MAX_HOPS = 4
+
+
+def _follow_reexport(module_file: str, symbol: str, graph: CallGraph) -> str | None:
+    """Resolve a symbol through a package __init__ that only re-exports it.
+
+    ``from pkg import Thing`` resolves to ``pkg/__init__.py``, which for most
+    distributed packages defines nothing itself, it just imports Thing from the
+    module that does. Without this the target node never exists and the call
+    edge is dropped, which is the common case, not an edge case.
+
+    Follows the explicit top-level re-export idiom only, including renames
+    (``from .impl import Thing as Other``) and relative imports. Star re-exports
+    (``from .core import *``) and imports nested in ``try``/``if TYPE_CHECKING``
+    blocks are not followed, because extract_imports does not record them. Those
+    miss silently rather than resolving to something wrong.
+
+    Returns None if the chain does not land on a real node, so callers keep
+    whatever target they already had.
+
+    ponytail: re-reads and re-parses the __init__ on every hop of every
+    unresolved call site, no caching. Free on ordinary files (the __init__.py
+    name check below rejects them before any IO) and unmeasurable on a normal
+    repo, but a hub-style __init__ costs ~6ms per hop, and a consumer with
+    thousands of call sites into one measured 3.7x slower to link. Cache the
+    import table on (path, mtime) if indexing a hub library starts to hurt.
+    """
+    path = Path(module_file)
+    for _ in range(_REEXPORT_MAX_HOPS):
+        # Only a package __init__ re-exports. Anything else defines its symbols,
+        # and if the node is missing there, chasing further would be guessing.
+        # This also bounds cycles: a chain that loops burns hops and gives up.
+        if path.name != "__init__.py":
+            return None
+        try:
+            src = path.read_bytes()
+        except OSError:
+            return None
+        rec = import_table_from_records(extract_imports(src)).get(symbol)
+        if rec is None or rec.symbol is None:
+            return None
+        nxt = _resolve_module(path, rec.module, rec.level, find_import_root(path), graph)
+        if nxt is None:
+            return None
+        path, symbol = Path(nxt), rec.symbol
+        target = f"{path}::{symbol}"
+        if graph.has_node(target):
+            return target
+    return None
+
+
 def _extract_cross_file_calls(
     root: Node,
     source: bytes,
@@ -656,12 +707,14 @@ def _extract_cross_file_calls(
                 continue
             if graph.has_node(f"{file_path}::{call_name}"):
                 continue  # local definition shadows the import
-            resolved = _resolve_module(
-                importing_path, rec.module, rec.level, import_root, graph
-            )
+            resolved = _resolve_module(importing_path, rec.module, rec.level, import_root, graph)
             if resolved is None:
                 continue
             target = f"{resolved}::{rec.symbol}"
+            if not graph.has_node(target) and (
+                followed := _follow_reexport(resolved, rec.symbol, graph)
+            ):
+                target = followed
             if graph.has_node(target):
                 graph.add_edge(caller, target, EdgeType.CALLS)
         else:
@@ -681,12 +734,14 @@ def _extract_cross_file_calls(
                     module = f"{rec.module}.{rec.symbol}"  # from pkg import sub; sub.f()
                 else:
                     module = rec.symbol  # from . import sub; sub.f()
-                resolved = _resolve_module(
-                    importing_path, module, rec.level, import_root, graph
-                )
+                resolved = _resolve_module(importing_path, module, rec.level, import_root, graph)
                 if resolved is None:
                     break
                 target = f"{resolved}::{remaining[0]}"
+                if not graph.has_node(target) and (
+                    followed := _follow_reexport(resolved, remaining[0], graph)
+                ):
+                    target = followed
                 if graph.has_node(target):
                     graph.add_edge(caller, target, EdgeType.CALLS)
                 break

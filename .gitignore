@@ -19,3 +19,4 @@ store/snapshots/*.json
 # IDE
 .vscode/
 .idea/
+.DS_Store

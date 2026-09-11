@@ -136,7 +136,7 @@ def _ground_truth(lib: Path, svc: Path) -> list[tuple[str, str, str, EdgeType | 
             f"{app}::use_reexport",
             f"{auth}::verify",
             EdgeType.CALLS,
-            False,
+            True,
         ),
         (
             "instance method call",
@@ -184,11 +184,11 @@ def test_cross_repo_symbol_recall(two_repos, capsys):
 
 
 def test_direct_import_call_resolves(two_repos):
-    """The one pattern that works today, pinned by name.
+    """The simplest resolving pattern, pinned by name.
 
     The table above only checks the set of results, so on its own it would stay
     green if this pattern broke while another started working. This says which
-    one is load-bearing.
+    one is load-bearing: every other resolution path starts here.
     """
     lib, svc, graph = two_repos
     assert _has_edge(
