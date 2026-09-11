@@ -725,6 +725,145 @@ def _resolve_imported_symbol(
     return None
 
 
+def _symbol_node(
+    name: str,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    importing_path: Path,
+    import_root: Path,
+    graph: CallGraph,
+) -> str | None:
+    """Node a bare or dotted symbol name refers to, same file first then imports."""
+    local = f"{file_path}::{name}"
+    if "." not in name and graph.has_node(local):
+        return local
+    return _resolve_imported_symbol(name, import_table, importing_path, import_root, graph)
+
+
+def _annotation_name(node: Node | None, source: bytes) -> str | None:
+    """Class name an annotation names directly, or None.
+
+    Only a bare name counts. ``list[Client]`` and ``Optional[Client]`` annotate a
+    container, not a Client, so unwrapping the subscript here would bind the
+    variable to the wrong class.
+    """
+    if node is not None and node.type == "type":
+        node = node.children[0] if node.children else None  # `type` wraps the name
+    if node is None or node.type not in ("identifier", "attribute"):
+        return None
+    return source[node.start_byte : node.end_byte].decode()
+
+
+def _receiver_classes(
+    func: Node,
+    source: bytes,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    importing_path: Path,
+    import_root: Path,
+    graph: CallGraph,
+) -> dict[str, str]:
+    """Variable -> class node, for receivers whose class is statically obvious.
+
+    Three shapes carry a type with no inference needed:
+      x = Client()        constructor call
+      def f(x: Client)    annotated parameter
+      x: Client = ...     annotated assignment
+    plus ``self``, which is the enclosing class.
+
+    Everything else is left alone. A factory return, a reassignment, an element
+    pulled out of a container: guessing any of those would hang the call off the
+    wrong class, which is worse than the edge being missing.
+    """
+    bindings: dict[str, str] = {}
+    conflicted: set[str] = set()
+
+    def bind(var: str, class_name: str) -> None:
+        node = _symbol_node(class_name, file_path, import_table, importing_path, import_root, graph)
+        if node is None:
+            return
+        if var in bindings and bindings[var] != node:
+            # Rebound to a different class inside one function. Which one a call
+            # sees depends on where it sits, and that is flow analysis. Drop it.
+            conflicted.add(var)
+            return
+        bindings[var] = node
+
+    parent = func.parent
+    while parent is not None and parent.type != "class_definition":
+        parent = parent.parent
+    if parent is not None:
+        cls = f"{file_path}::{_py_node_name(parent, source)}"
+        if graph.has_node(cls):
+            bindings["self"] = cls
+
+    params = func.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.children:
+            if param.type != "typed_parameter":
+                continue
+            name_node = next((c for c in param.children if c.type == "identifier"), None)
+            ann = _annotation_name(param.child_by_field_name("type"), source)
+            if name_node is not None and ann:
+                bind(source[name_node.start_byte : name_node.end_byte].decode(), ann)
+
+    body = func.child_by_field_name("body")
+    for assign in _find_nodes_by_type(body, "assignment") if body else []:
+        left = assign.child_by_field_name("left")
+        if left is None or left.type != "identifier":
+            continue
+        var = source[left.start_byte : left.end_byte].decode()
+        ann = _annotation_name(assign.child_by_field_name("type"), source)
+        if ann:
+            bind(var, ann)
+            continue
+        right = assign.child_by_field_name("right")
+        if right is None or right.type != "call":
+            continue
+        ctor = right.child_by_field_name("function")
+        if ctor is not None and ctor.type in ("identifier", "attribute"):
+            bind(var, source[ctor.start_byte : ctor.end_byte].decode())
+
+    for var in conflicted:
+        bindings.pop(var, None)
+    return bindings
+
+
+def _receiver_bindings_by_caller(
+    root: Node,
+    source: bytes,
+    file_path: str,
+    import_table: dict[str, ImportRecord],
+    importing_path: Path,
+    import_root: Path,
+    graph: CallGraph,
+) -> dict[str, dict[str, str]]:
+    """Receiver bindings per enclosing function qualified name.
+
+    Bindings are per function, never per file: the same variable name routinely
+    holds different classes in different functions, and a file-wide map would
+    cross those over.
+    """
+    out: dict[str, dict[str, str]] = {}
+    ambiguous: set[str] = set()
+    for func in _find_nodes_by_type(root, "function_definition"):
+        body = func.child_by_field_name("body")
+        qname = _find_enclosing_function(body, source, file_path) if body else None
+        if qname is None:
+            continue
+        if qname in out:
+            # Two functions resolving to one qualified name, e.g. a nested
+            # function sharing a name. Drop both rather than merge them.
+            ambiguous.add(qname)
+            continue
+        out[qname] = _receiver_classes(
+            func, source, file_path, import_table, importing_path, import_root, graph
+        )
+    for qname in ambiguous:
+        out.pop(qname, None)
+    return out
+
+
 def _extract_inherits_edges(
     root: Node,
     source: bytes,
@@ -797,6 +936,9 @@ def _extract_cross_file_calls(
     is also defined locally is left to same-file resolution (the local definition
     shadows the import), so no spurious cross-file edge is added.
     """
+    bindings = _receiver_bindings_by_caller(
+        root, source, file_path, import_table, importing_path, import_root, graph
+    )
     for call in _find_nodes_by_type(root, "call"):
         func_node = call.child_by_field_name("function")
         if not func_node:
@@ -807,6 +949,18 @@ def _extract_cross_file_calls(
             continue
         if "." not in call_name and graph.has_node(f"{file_path}::{call_name}"):
             continue  # local definition shadows the import
+
+        # receiver.method(): a variable whose class is known beats treating the
+        # first segment as a module name, the same way a local def shadows an
+        # import. Only single-segment receivers, so x.y.z() stays unresolved.
+        receiver, _, rest = call_name.partition(".")
+        cls = bindings.get(caller, {}).get(receiver) if rest and "." not in rest else None
+        if cls:
+            method = f"{cls}.{rest}"
+            if graph.has_node(method):
+                graph.add_edge(caller, method, EdgeType.CALLS)
+            continue
+
         target = _resolve_imported_symbol(
             call_name, import_table, importing_path, import_root, graph
         )

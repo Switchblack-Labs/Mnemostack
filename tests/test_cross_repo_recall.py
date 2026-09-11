@@ -166,7 +166,7 @@ def _ground_truth(lib: Path, svc: Path) -> list[tuple[str, str, str, EdgeType | 
             f"{app}::use_client",
             f"{client}::Client.fetch",
             EdgeType.CALLS,
-            False,
+            True,
         ),
         (
             "subclass of imported base",
@@ -282,3 +282,110 @@ def test_unindexed_base_makes_no_edge(two_repos):
     boxed = f"{svc / 'app.py'}::Boxed"
     assert graph.has_node(boxed)
     assert graph.get_neighbors(boxed, hops=1, edge_types=[EdgeType.INHERITS]) == []
+
+
+# --- receiver binding: the cases that could produce a WRONG edge -------------
+
+SCOPING_FILES = {
+    "scoping.py": (
+        "from libcore.client import BaseHandler, Client\n"
+        "\n"
+        "\n"
+        "def uses_annotated_param(c: Client, url):\n"
+        "    return c.fetch(url)\n"
+        "\n"
+        "\n"
+        "def holds_a_client(url):\n"
+        "    thing = Client()\n"
+        "    return thing.fetch(url)\n"
+        "\n"
+        "\n"
+        "def holds_a_handler(event):\n"
+        "    thing = BaseHandler()\n"
+        "    return thing.handle(event)\n"
+        "\n"
+        "\n"
+        "def rebinds(url):\n"
+        "    thing = Client()\n"
+        "    thing = BaseHandler()\n"
+        "    return thing.fetch(url)\n"
+        "\n"
+        "\n"
+        "def from_a_factory(make, url):\n"
+        "    thing = make()\n"
+        "    return thing.fetch(url)\n"
+        "\n"
+        "\n"
+        "class Wrapper:\n"
+        "    def fetch(self, url):\n"
+        "        return url\n"
+        "\n"
+        "    def outer(self, url):\n"
+        "        return self.fetch(url)\n"
+    ),
+}
+
+
+@pytest.fixture
+def scoping(tmp_path: Path):
+    lib = _write(tmp_path / "lib_side" / "libcore_repo", LIB_FILES)
+    svc = _write(tmp_path / "svc_side" / "svc_repo", SCOPING_FILES)
+
+    graph = CallGraph(store_dir=tmp_path / "store")
+    for root, files in ((lib, LIB_FILES), (svc, SCOPING_FILES)):
+        for rel in files:
+            build_nodes_for_python_file(root / rel, graph=graph)
+    for root, files in ((lib, LIB_FILES), (svc, SCOPING_FILES)):
+        for rel in files:
+            link_python_file_imports(root / rel, graph=graph, import_root=root)
+
+    yield lib, svc, graph
+    graph.close()
+
+
+def test_annotated_param_receiver_resolves(scoping):
+    lib, svc, graph = scoping
+    assert _has_edge(
+        graph,
+        f"{svc / 'scoping.py'}::uses_annotated_param",
+        f"{lib / 'libcore' / 'client.py'}::Client.fetch",
+        EdgeType.CALLS,
+    )
+
+
+def test_self_call_resolves_to_own_class(scoping):
+    lib, svc, graph = scoping
+    scope = svc / "scoping.py"
+    assert _has_edge(graph, f"{scope}::Wrapper.outer", f"{scope}::Wrapper.fetch", EdgeType.CALLS)
+
+
+def test_same_variable_name_does_not_cross_functions(scoping):
+    """`thing` is a Client in one function and a BaseHandler in another.
+
+    A file-wide receiver map would give one of these the other's class. This is
+    the reason bindings are computed per function.
+    """
+    lib, svc, graph = scoping
+    scope, client = svc / "scoping.py", lib / "libcore" / "client.py"
+
+    assert _has_edge(graph, f"{scope}::holds_a_client", f"{client}::Client.fetch", EdgeType.CALLS)
+    assert _has_edge(
+        graph, f"{scope}::holds_a_handler", f"{client}::BaseHandler.handle", EdgeType.CALLS
+    )
+    # ...and neither reaches into the other's class.
+    assert not _has_edge(
+        graph, f"{scope}::holds_a_client", f"{client}::BaseHandler.handle", EdgeType.CALLS
+    )
+
+
+def test_rebound_and_factory_receivers_make_no_edge(scoping):
+    """Two receivers whose class is not statically obvious must bind to nothing.
+
+    `rebinds` assigns two different classes to one name, so which one a call
+    sees is flow-dependent. `from_a_factory` gets its object from a parameter.
+    Guessing either would hang the call off the wrong class.
+    """
+    lib, svc, graph = scoping
+    scope, client = svc / "scoping.py", lib / "libcore" / "client.py"
+    for caller in ("rebinds", "from_a_factory"):
+        assert not _has_edge(graph, f"{scope}::{caller}", f"{client}::Client.fetch", EdgeType.CALLS)
