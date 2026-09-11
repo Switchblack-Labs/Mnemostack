@@ -1,9 +1,8 @@
-"""Griffe-backed API diff, and its join to call graph nodes.
+"""Griffe-backed API diff between two git refs.
 
-The join is the part worth testing. Griffe addresses an object by dotted module
-path and the graph addresses it by absolute file path, so a silent mismatch
-would leave every change unpaired and the impact set empty while everything
-still looked green.
+The upgrade path compares published versions instead, so this covers the form
+used for benchmark datasets of (ref, ref) pairs and for pointing the tool at a
+library author's own repository.
 """
 
 from __future__ import annotations
@@ -13,16 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from mnemostack.core.impact.api_diff import (
-    breaking_changes,
-    changed_nodes,
-    fqn_index,
-)
-from mnemostack.core.retrieval.call_graph import (
-    CallGraph,
-    build_nodes_for_python_file,
-    link_python_file_imports,
-)
+from mnemostack.core.impact.api_diff import breaking_changes
 
 V1 = {
     "libx/__init__.py": "from libx.core import verify\n",
@@ -110,41 +100,3 @@ def test_removed_object_is_breaking(versioned_repo):
     changes = breaking_changes("libx", versioned_repo, "v1", "v2")
     kinds = {c.fqn: c.kind for c in changes}
     assert kinds.get("libx.core.retired") == "OBJECT_REMOVED"
-
-
-def test_fqn_index_maps_dotted_paths_to_graph_nodes(tmp_path, versioned_repo):
-    """The join: griffe's `libx.core.verify` must find the graph's node."""
-    graph = CallGraph(store_dir=tmp_path / "store")
-    files = sorted(versioned_repo.rglob("*.py"))
-    for f in files:
-        build_nodes_for_python_file(f, graph=graph)
-    for f in files:
-        link_python_file_imports(f, graph=graph)
-
-    index = fqn_index(graph)
-    core = versioned_repo / "libx" / "core.py"
-
-    assert index.get("libx.core.verify") == f"{core}::verify"
-    # Methods keep the Class.method tail on both sides of the join.
-    assert index.get("libx.core.Client.fetch") == f"{core}::Client.fetch"
-    graph.close()
-
-
-def test_changed_nodes_pairs_breakages_with_nodes(tmp_path, versioned_repo):
-    graph = CallGraph(store_dir=tmp_path / "store")
-    files = sorted(versioned_repo.rglob("*.py"))
-    for f in files:
-        build_nodes_for_python_file(f, graph=graph)
-    for f in files:
-        link_python_file_imports(f, graph=graph)
-
-    changes = breaking_changes("libx", versioned_repo, "v1", "v2")
-    paired = changed_nodes(graph, changes)
-
-    core = versioned_repo / "libx" / "core.py"
-    assert (f"{core}::verify", next(c for c in changes if c.fqn == "libx.core.verify")) in paired
-
-    # `retired` is gone at HEAD, so it has no node to pair with. Dropping it is
-    # correct: the graph describes the current tree, not the old one.
-    assert all("retired" not in node for node, _ in paired)
-    graph.close()
