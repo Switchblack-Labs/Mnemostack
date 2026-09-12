@@ -1,34 +1,51 @@
-"""Check a claimed removal by trying it, not by reading about it.
+"""Check a claimed change by trying it, not by reading about it.
 
-griffe diffs API models, and those models are wrong about re-exports. Across
-twenty repositories we did not write, most OBJECT_REMOVED findings named symbols
-that import perfectly well in the new version, because what moved was an
-internal definition the public name still points at. Reading source cannot
-settle that. Importing it can, in an isolated environment that never touches
-the user's own.
+griffe diffs API models, and those models are wrong often enough to sink a
+report. Across twenty repositories we did not write, most OBJECT_REMOVED
+findings named symbols that import perfectly well in the new version, because
+what moved was an internal definition the public name still points at. The
+signature changes that survived were the same story: `click.Argument([...])` is
+reported as gaining a required parameter and works fine.
 
-Only removals are witnessed here. They were the largest false-positive class and
-the only one a bare import can decide. A changed signature needs the arguments
-the code actually passes, which is a different mechanism.
+Reading source cannot settle either. Running it can, in a throwaway environment
+that never touches the user's own:
+
+- a removal is checked by importing the path the code uses in the new version;
+- a signature or kind change is checked by describing that path in both
+  versions and comparing what the running code actually exposes.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
 
-from mnemostack.core.impact.propagate import Impact
+from mnemostack.core.impact.propagate import Impact, Severity
 
 Resolver = Callable[[str, str, list[str]], "dict[str, bool] | None"]
+Prober = Callable[[str, str, list[str]], "dict[str, dict] | None"]
+
+SIGNATURE_KINDS = frozenset(
+    {
+        "PARAMETER_ADDED_REQUIRED",
+        "PARAMETER_REMOVED",
+        "PARAMETER_MOVED",
+        "PARAMETER_CHANGED_KIND",
+        "PARAMETER_CHANGED_REQUIRED",
+        "PARAMETER_CHANGED_DEFAULT",
+        "OBJECT_CHANGED_KIND",
+    }
+)
 
 _PROBE = r"""
-import importlib, json, sys, warnings
+import importlib, inspect, json, sys, warnings
 warnings.simplefilter("ignore")
 
-def resolves(path):
+def resolve(path):
     parts = path.split(".")
     for cut in range(len(parts), 0, -1):
         try:
@@ -39,25 +56,57 @@ def resolves(path):
             for part in parts[cut:]:
                 obj = getattr(obj, part)
         except Exception:
-            return False
-        return True
-    return False
+            return False, None
+        return True, obj
+    return False, None
 
-print(json.dumps({p: resolves(p) for p in json.loads(sys.argv[1])}))
+def default(value):
+    if value is inspect.Parameter.empty:
+        return None
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return repr(value)
+    return "<object>"
+
+def describe(path):
+    ok, obj = resolve(path)
+    if not ok:
+        return {"resolves": False, "kind": None, "signature": None}
+    if inspect.isclass(obj):
+        kind = "class"
+    elif inspect.ismodule(obj):
+        kind = "module"
+    elif callable(obj):
+        kind = "callable"
+    else:
+        kind = "attribute"
+    try:
+        signature = [
+            [p.name, p.kind.name, default(p.default)]
+            for p in inspect.signature(obj).parameters.values()
+        ]
+    except (TypeError, ValueError):
+        signature = None
+    return {"resolves": True, "kind": kind, "signature": signature}
+
+print(json.dumps({p: describe(p) for p in json.loads(sys.argv[1])}))
 """
 
 
-def uv_resolver(distribution: str, version: str, paths: list[str]) -> dict[str, bool] | None:
-    """Which dotted paths resolve with `distribution==version`, or None if unknown.
+def uv_probe(distribution: str, version: str, paths: list[str]) -> dict[str, dict] | None:
+    """Describe dotted paths with `distribution==version` installed, or None.
+
+    Each path maps to whether it resolves, what kind of object it is, and its
+    parameters as (name, kind, default). Defaults are compared only when they
+    are plain values; anything else is recorded as an opaque object, so a
+    change between two object defaults is not seen.
 
     Runs through `uv run --no-project` in a throwaway environment, so nothing in
     the user's environment is installed, upgraded or imported. None means the
-    witness could not run at all (no uv, a failed install, a crashed probe), and
-    callers must read that as "unverified", never as "not removed".
+    probe could not run at all (no uv, a failed install, a crash), which callers
+    must read as "unverified", never as "unchanged".
 
-    Resolution goes through getattr, not a static lookup, so a module-level
-    __getattr__ shim answers the way it would for real code: pydantic's
-    `parse_file_as` raises through its shim and correctly counts as removed.
+    Resolution goes through getattr, so a module-level __getattr__ shim answers
+    the way it would for real code.
     """
     uv = shutil.which("uv")
     if uv is None:
@@ -90,7 +139,15 @@ def uv_resolver(distribution: str, version: str, paths: list[str]) -> dict[str, 
         answer = json.loads(done.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         return None
-    return {str(path): bool(ok) for path, ok in answer.items()}
+    return {str(path): info for path, info in answer.items() if isinstance(info, dict)}
+
+
+def uv_resolver(distribution: str, version: str, paths: list[str]) -> dict[str, bool] | None:
+    """Which dotted paths resolve with `distribution==version`, or None if unknown."""
+    described = uv_probe(distribution, version, paths)
+    if described is None:
+        return None
+    return {path: bool(info.get("resolves")) for path, info in described.items()}
 
 
 def witness_removals(
@@ -135,3 +192,62 @@ def witness_removals(
         elif result is None:
             unwitnessed += 1
     return kept, unwitnessed
+
+
+def witness_signatures(
+    impacts: Iterable[Impact],
+    distribution: str,
+    old_version: str | None,
+    new_version: str,
+    probe: Prober = uv_probe,
+) -> list[Impact]:
+    """Check signature and kind changes against the running code in both versions.
+
+    If the path the code uses has the same signature (or, for a kind change, is
+    the same kind of object) before and after, griffe reported a change the
+    running code does not show, and the finding is dropped. If it differs, the
+    finding stands, now witnessed.
+
+    If either side cannot be described, a builtin or C extension with no
+    introspectable signature for instance, a BREAK is demoted to REVIEW rather
+    than dropped. Unverified is not the same as wrong, but it should not be the
+    loudest line in the report either.
+
+    If the old version is unknown or the probe cannot run, nothing changes.
+    """
+    impacts = list(impacts)
+    if not old_version or not any(i.change.kind in SIGNATURE_KINDS for i in impacts):
+        return impacts
+
+    paths = sorted({i.site.via for i in impacts if i.change.kind in SIGNATURE_KINDS and i.site.via})
+    before = probe(distribution, old_version, paths)
+    after = probe(distribution, new_version, paths)
+    if before is None or after is None:
+        return impacts
+
+    kept: list[Impact] = []
+    for impact in impacts:
+        if impact.change.kind not in SIGNATURE_KINDS:
+            kept.append(impact)
+            continue
+        field = "kind" if impact.change.kind == "OBJECT_CHANGED_KIND" else "signature"
+        via = impact.site.via
+        old = before.get(via) if via else None
+        new = after.get(via) if via else None
+        comparable = (
+            old is not None
+            and new is not None
+            and old.get("resolves")
+            and new.get("resolves")
+            and old.get(field) is not None
+            and new.get(field) is not None
+        )
+        if comparable:
+            if old[field] != new[field]:
+                kept.append(impact)  # witnessed: the running code really changed
+            continue
+        if impact.severity is Severity.BREAK:
+            kept.append(dataclasses.replace(impact, severity=Severity.REVIEW))
+        else:
+            kept.append(impact)
+    return kept
