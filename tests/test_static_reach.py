@@ -230,3 +230,55 @@ def test_scanning_a_real_package_terminates(tmp_path: Path):
     )
     sites = find_sites(repo, "pydantic", {"BaseModel", "BaseModel.dict"})
     assert "BaseModel" in _symbols(sites)
+
+
+# --- false-positive classes found on twenty repos we did not write ----------
+
+
+def test_strings_and_comments_are_not_matched(tree):
+    """`render('index.html')` is not a use of a removed `werkzeug.html`.
+
+    Matching raw text credited a template filename to werkzeug 44 times in flask
+    alone. Strings and comments are blanked before matching.
+    """
+    repo = tree(
+        {
+            "app.py": (
+                "import werkzeug\n"
+                "\n"
+                "\n"
+                "def page():\n"
+                "    return render('index.html')  # see werkzeug.html\n"
+            )
+        }
+    )
+    assert [s for s in find_sites(repo, "werkzeug", {"html"}) if s.line == 5] == []
+
+
+def test_reported_text_is_the_original_line_not_the_blanked_one(tree):
+    """Blanking is for matching only. The reader sees what was written."""
+    repo = tree({"app.py": "from requests import get\n\n\ndef go():\n    return get('u')  # hi\n"})
+    site = next(s for s in find_sites(repo, "requests", {"get"}) if s.line == 5)
+    assert site.text == "return get('u')  # hi"
+
+
+def test_foreign_source_with_bad_escapes_parses_quietly(tree):
+    """Code we did not write often has invalid escapes; parsing must stay quiet.
+
+    ast.parse reports each one as a SyntaxWarning, which across twenty real
+    repos was dozens of warning lines interleaved with the report.
+    """
+    import warnings
+
+    repo = tree(
+        {
+            "app.py": (
+                'from requests import get\n\nPATTERN = "\\d+"\n\n\ndef go():\n    return get("u")\n'
+            )
+        }
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sites = find_sites(repo, "requests", {"get"})
+    assert "get" in _symbols(sites)
+    assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]

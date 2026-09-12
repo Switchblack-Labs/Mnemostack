@@ -48,6 +48,7 @@ class UpgradeReport:
     verified_changes: int
     impacts: list[Impact]
     deprecations: list[Deprecation] = field(default_factory=list)
+    unwitnessed: int = 0  # removals dropped because no import could confirm them
 
 
 def _ensure_pypi_cache() -> None:
@@ -288,12 +289,22 @@ def check_upgrade(
         for symbol, found in sorted(by_symbol.items())
     ]
 
+    # Imported here rather than at the top to keep witness, which depends on
+    # propagate, out of the import path of anything that only needs the diff.
+    from mnemostack.core.impact.witness import witness_removals
+
+    # A removal is only reported if the import the code actually uses fails in
+    # the target version. Measured across twenty repos we did not write, griffe's
+    # removals were mostly re-exports that still import fine.
+    impacts, unwitnessed = witness_removals(narrow(impact_report(sites, real)), dist, to_version)
+
     return UpgradeReport(
         package=package,
         from_version=from_version or "installed",
         to_version=to_version,
         total_changes=len(raw),
         verified_changes=len(real),
-        impacts=narrow(impact_report(sites, real)),
+        impacts=impacts,
         deprecations=deprecations,
+        unwitnessed=unwitnessed,
     )

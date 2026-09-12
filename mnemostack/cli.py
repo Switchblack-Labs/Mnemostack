@@ -116,6 +116,11 @@ def upgrade_check(argv: list[str]) -> int:
         f"{report.package} {report.from_version} -> {report.to_version}: "
         f"{report.verified_changes} breaking change(s){note}"
     )
+    if report.unwitnessed:
+        print(
+            f"  {report.unwitnessed} possible removal(s) not shown: reached through an "
+            "object whose type a line cannot reveal, so no import could confirm them."
+        )
 
     if not report.impacts and not report.deprecations:
         print("\n  Nothing in your code touches what changed.")

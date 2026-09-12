@@ -15,10 +15,65 @@ question, so an unrelated local `get` is never mistaken for the library's.
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
+import warnings
 from pathlib import Path
 
 from mnemostack.core.reach import RefKind, Site
+
+
+def parse_source(source: str) -> ast.Module | None:
+    """Parse foreign source quietly, or None if it is not valid Python here.
+
+    Code we did not write routinely contains invalid escape sequences, and
+    ast.parse reports each one as a SyntaxWarning on stderr. Across twenty real
+    repositories that was dozens of lines of noise interleaved with the report.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        try:
+            return ast.parse(source)
+        except (SyntaxError, ValueError):
+            return None
+
+
+def code_lines(source: str) -> list[str]:
+    """Source lines with string literals and comments blanked to spaces.
+
+    Matching used to run against raw text, so `render_template('index.html')`
+    was credited to a removed `werkzeug.html`. Blanking keeps columns and line
+    numbers intact, so a match still points at the right place in the real line.
+
+    Quoted forward references (`s: 'Session'`) are lost along with the noise.
+    They are rarer than what they would keep in, and unquoted annotations still
+    match normally.
+    """
+    lines = source.splitlines()
+    blank = {tokenize.STRING, tokenize.COMMENT}
+    if hasattr(tokenize, "FSTRING_MIDDLE"):
+        blank.add(tokenize.FSTRING_MIDDLE)  # literal parts of an f-string only
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return lines
+
+    rows = [list(line) for line in lines]
+    for tok in tokens:
+        if tok.type not in blank:
+            continue
+        (start_row, start_col), (end_row, end_col) = tok.start, tok.end
+        for row_no in range(start_row, end_row + 1):
+            if row_no - 1 >= len(rows):
+                break
+            row = rows[row_no - 1]
+            first = start_col if row_no == start_row else 0
+            last = end_col if row_no == end_row else len(row)
+            for col in range(first, min(last, len(row))):
+                row[col] = " "
+    return ["".join(row) for row in rows]
+
 
 SKIP_DIRS = frozenset(
     {
@@ -85,6 +140,40 @@ def _source_files(root: Path) -> list[Path]:
     ]
 
 
+def via_path(
+    package: str, symbol: str, imports: dict[str, str], code: str, leaf: str
+) -> str | None:
+    """The dotted path, package included, that this line uses to reach `symbol`.
+
+    griffe names where a symbol is defined and code names where it imports it
+    from; a witness has to test the second. For a from-import the path is what
+    the file imported plus whatever of `symbol` lies beyond it:
+    `from paylib import Session` reaching `Session.drain` gives
+    `paylib.Session.drain`, and `from pydantic import ValidationError` reaching
+    `error_wrappers.ValidationError` gives `pydantic.ValidationError`.
+
+    For a module import it is read off the line, as `alias.chain.leaf`. Anything
+    else, a method on an object whose type the line does not show, has no path a
+    single import can test and returns None.
+    """
+    root = package.split(".")[0]
+    parts = symbol.split(".")
+    for target in imports.values():
+        if not target:
+            continue
+        target_leaf = target.split(".")[-1]
+        if target_leaf in parts:
+            rest = parts[parts.index(target_leaf) + 1 :]
+            return ".".join([root, target, *rest])
+    for local, target in imports.items():
+        if target:
+            continue
+        found = re.search(rf"\b{re.escape(local)}\.((?:\w+\.)*{re.escape(leaf)})\b", code)
+        if found:
+            return f"{root}.{found.group(1)}"
+    return None
+
+
 def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
     """Every place in `repo` that touches one of `symbols` from `package`.
 
@@ -103,9 +192,11 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
     for path in _source_files(repo):
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
-            tree = ast.parse(source)
-        except (OSError, SyntaxError):
-            continue  # unreadable or not valid for this interpreter: skip, quietly
+        except OSError:
+            continue
+        tree = parse_source(source)
+        if tree is None:
+            continue  # not valid Python for this interpreter: skip, quietly
 
         imports = imported_names(tree, package)
         if not imports:
@@ -142,10 +233,13 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
             wanted.setdefault((leaf, leaf in bound), set()).add(symbol)
 
         relative = path.relative_to(repo).as_posix()
-        for lineno, line in enumerate(source.splitlines(), start=1):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
+        # Match against code only, but report the real line: `text` keeps what
+        # was actually written, for the reader and for narrow()'s keyword check.
+        raw_lines = source.splitlines()
+        for lineno, line in enumerate(code_lines(source), start=1):
+            stripped = raw_lines[lineno - 1].strip() if lineno <= len(raw_lines) else ""
+            if not line.strip():
+                continue  # blank, or nothing left once strings and comments go
             for (leaf, bare), owners in wanted.items():
                 pattern = rf"\b{re.escape(leaf)}\b" if bare else rf"\.{re.escape(leaf)}\b"
                 if not re.search(pattern, line):
@@ -159,6 +253,7 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
                             symbol=symbol,
                             kind=kind,
                             text=stripped[:200],
+                            via=via_path(package, symbol, imports, line, leaf),
                         )
                     )
     return sites
