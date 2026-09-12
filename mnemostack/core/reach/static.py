@@ -158,9 +158,14 @@ def via_path(
     """
     root = package.split(".")[0]
     parts = symbol.split(".")
-    for target in imports.values():
-        if not target:
-            continue
+    # Prefer the import of the class a member belongs to. Any other import whose
+    # name merely appears in the path builds a path to something the line never
+    # touched, and the witness then faithfully confirms that the wrong thing is
+    # gone: `Table.exists` tested through an unrelated `from sqlalchemy.sql
+    # import exists` did exactly that.
+    owner = parts[-2] if len(parts) > 1 else None
+    targets = sorted((t for t in imports.values() if t), key=lambda t: t.split(".")[-1] != owner)
+    for target in targets:
         target_leaf = target.split(".")[-1]
         if target_leaf in parts:
             rest = parts[parts.index(target_leaf) + 1 :]
@@ -174,16 +179,57 @@ def via_path(
     return None
 
 
+_IMPORT_LINE = re.compile(r"\s*(?:from\s+[\w.]+\s+)?import\s")
+
+
+def _receivers(owner: str, imports: dict[str, str], code: str) -> set[str]:
+    """Names in this file that can refer to class `owner` or hold an instance of it.
+
+    A member such as `Table.exists` is only reachable through a receiver the file
+    grounds in its own text: the name the class was imported as, a class here
+    that subclasses it, or a variable assigned from or annotated as one of those.
+    Inside a subclass, `self` and `cls` count too.
+
+    Accepting any `.exists` let `super().execute(...)` in a Session subclass
+    answer for a removed `Executable.execute`, and a bare `exists` imported from
+    elsewhere answer for `Table.exists`. Across twenty repositories we did not
+    write, those were most of the removals the witness kept.
+
+    File-level text, not scope: a variable assigned in one function counts in
+    another. That over-reaches, and it is still far narrower than any name.
+    """
+    names = {local for local, target in imports.items() if target.split(".")[-1] == owner}
+    names |= {f"{local}.{owner}" for local, target in imports.items() if not target}
+    if not names:
+        return set()
+
+    subclassed = False
+    for _ in range(3):  # a subclass of a subclass, a variable of a subclass
+        alternation = "|".join(sorted(map(re.escape, names)))
+        grown = set(names)
+        for match in re.finditer(r"\bclass\s+(\w+)\s*\(([^)]*)\)", code):
+            if re.search(rf"(?<![\w.])(?:{alternation})\b", match.group(2)):
+                grown.add(match.group(1))
+                subclassed = True
+        grown.update(re.findall(rf"\b(\w+)\s*=\s*(?:{alternation})\s*\(", code))
+        grown.update(re.findall(rf"\b(\w+)\s*:\s*(?:{alternation})\b", code))
+        if grown == names:
+            break
+        names = grown
+    if subclassed:
+        names |= {"self", "cls"}
+    return names
+
+
 def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
     """Every place in `repo` that touches one of `symbols` from `package`.
 
     `symbols` are dotted paths below the package, e.g. {"Session.request",
     "get", "adapters.HTTPAdapter"}. A site matches when the file imports
-    something that leads to the symbol and the line names its last component.
-
-    The last component is what the source actually says: code that imported
-    `Session` writes `s.request(...)`, never `Session.request(...)`. Matching on
-    the leaf is what makes a method on an imported class findable at all.
+    something that leads to the symbol and the line names it the way code does:
+    bare if it was imported directly, as its class if it is a constructor, and as
+    `receiver.member` if it belongs to a class, where the receiver has to be
+    grounded in this file rather than be any object with a same-named attribute.
     """
     if not symbols:
         return []
@@ -215,33 +261,64 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
         if not reachable:
             continue
 
-        # Group by the name the source will actually say, and by how it will say
-        # it. A directly imported name is written bare; anything reached through
-        # an object is written as an attribute. Requiring the dot for the second
-        # case is what stops a change to `BaseModel.dict` matching every call to
-        # the `dict` builtin in a file that happens to import BaseModel.
-        wanted: dict[tuple[str, bool], set[str]] = {}
+        code = code_lines(source)
+        file_code = "\n".join(code)
+        receiver_cache: dict[str, set[str]] = {}
+
+        # One pattern per way the source can name a symbol. A directly imported
+        # name is written bare. A member of a class is written `receiver.member`
+        # with a grounded receiver. Anything else reached through an object is
+        # written as an attribute, which at least stops a module-level change
+        # matching every call to a same-named builtin.
+        wanted: dict[str, tuple[str, bool, set[str]]] = {}
         for symbol in reachable:
             parts = symbol.split(".")
             leaf = parts[-1]
             if leaf == "__init__" and len(parts) > 1:
                 # Calling `Session(...)` invokes `Session.__init__`, but the
-                # source never writes the constructor's name. A constructor
-                # gaining a required argument is the most common breakage shape
-                # there is, so searching for `__init__` would miss all of them.
+                # source never writes the constructor's name, so search for the
+                # class being called. Calls only: importing BaseModel or
+                # declaring `class User(BaseModel)` does not run BaseModel's
+                # constructor, and matching those hung a constructor change on
+                # every model declaration and import line in a pydantic codebase.
                 leaf = parts[-2]
-            wanted.setdefault((leaf, leaf in bound), set()).add(symbol)
+                names = {
+                    local
+                    for local, target in imports.items()
+                    if target and target.split(".")[-1] == leaf
+                } | {f"{local}.{leaf}" for local, target in imports.items() if not target}
+                if not names:
+                    continue
+                bare = False
+                alternation = "|".join(sorted(map(re.escape, names)))
+                pattern = rf"(?<![\w.])(?:{alternation})\s*\("
+            elif len(parts) > 1 and parts[-2][:1].isupper():
+                owner = parts[-2]
+                if owner not in receiver_cache:
+                    receiver_cache[owner] = _receivers(owner, imports, file_code)
+                names = receiver_cache[owner]
+                if not names:
+                    continue  # nothing here can hold one, so nothing here uses it
+                bare = False
+                alternation = "|".join(sorted(map(re.escape, names)))
+                pattern = rf"(?<![\w.])(?:{alternation})\.{re.escape(leaf)}\b"
+            else:
+                bare = leaf in bound
+                pattern = rf"\b{re.escape(leaf)}\b" if bare else rf"\.{re.escape(leaf)}\b"
+            wanted.setdefault(pattern, (leaf, bare, set()))[2].add(symbol)
 
         relative = path.relative_to(repo).as_posix()
         # Match against code only, but report the real line: `text` keeps what
         # was actually written, for the reader and for narrow()'s keyword check.
         raw_lines = source.splitlines()
-        for lineno, line in enumerate(code_lines(source), start=1):
+        for lineno, line in enumerate(code, start=1):
             stripped = raw_lines[lineno - 1].strip() if lineno <= len(raw_lines) else ""
             if not line.strip():
                 continue  # blank, or nothing left once strings and comments go
-            for (leaf, bare), owners in wanted.items():
-                pattern = rf"\b{re.escape(leaf)}\b" if bare else rf"\.{re.escape(leaf)}\b"
+            is_import = _IMPORT_LINE.match(line) is not None
+            for pattern, (leaf, bare, owners) in wanted.items():
+                if is_import and not bare:
+                    continue  # a dotted module path in an import names no attribute
                 if not re.search(pattern, line):
                     continue
                 kind = _kind(line, leaf)
