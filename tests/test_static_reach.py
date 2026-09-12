@@ -282,3 +282,127 @@ def test_foreign_source_with_bad_escapes_parses_quietly(tree):
         sites = find_sites(repo, "requests", {"get"})
     assert "get" in _symbols(sites)
     assert not [w for w in caught if issubclass(w.category, SyntaxWarning)]
+
+
+# --- class members need a receiver grounded in the file ---------------------
+# Each case below is a removal the witness kept on twenty repos we did not
+# write: the removal was real, but the line never touched that class.
+
+
+def test_super_call_on_an_unrelated_class_is_not_a_member_use(tree):
+    """`super().execute()` in a Session subclass is not `Executable.execute`."""
+    repo = tree(
+        {
+            "session.py": (
+                "from sqlalchemy.sql.base import Executable\n"
+                "from sqlalchemy.orm import Session\n"
+                "\n"
+                "\n"
+                "class MySession(Session):\n"
+                "    def execute(self, stmt):\n"
+                "        return super().execute(stmt)\n"
+            )
+        }
+    )
+    assert find_sites(repo, "sqlalchemy", {"sql.base.Executable.execute"}) == []
+
+
+def test_same_named_function_import_is_not_a_class_member(tree):
+    """A bare `exists` imported from elsewhere is not `Table.exists`."""
+    repo = tree(
+        {
+            "q.py": (
+                "from sqlalchemy.schema import Table\n"
+                "from sqlalchemy.sql import exists\n"
+                "\n"
+                "\n"
+                "def q():\n"
+                "    return exists()\n"
+            )
+        }
+    )
+    assert find_sites(repo, "sqlalchemy", {"sql.schema.Table.exists"}) == []
+
+
+def test_module_path_inside_an_import_is_not_an_attribute_use(tree):
+    """`from pydantic.fields import FieldInfo` does not use anything `.fields`."""
+    repo = tree({"a.py": "import pydantic\nfrom pydantic.fields import FieldInfo\n"})
+    sites = find_sites(repo, "pydantic", {"fields", "config.ConfigDict.fields"})
+    assert [s for s in sites if s.line == 2] == []
+
+
+def test_member_through_a_subclass_instance_and_self_is_found(tree):
+    """Grounding must keep the real cases: pydantic's `u.dict()` on a model."""
+    repo = tree(
+        {
+            "models.py": (
+                "from pydantic import BaseModel\n"
+                "\n"
+                "\n"
+                "class User(BaseModel):\n"
+                "    def me(self):\n"
+                "        return self.dict()\n"
+                "\n"
+                "\n"
+                "def dump(u: User):\n"
+                "    return u.dict()\n"
+            )
+        }
+    )
+    lines = {s.line for s in find_sites(repo, "pydantic", {"main.BaseModel.dict"})}
+    assert {6, 10} <= lines
+
+
+def test_member_through_a_module_qualified_class_is_found(tree):
+    repo = tree(
+        {
+            "check.py": (
+                "import sqlalchemy\n"
+                "\n"
+                "\n"
+                "def check(engine):\n"
+                "    t = sqlalchemy.Table()\n"
+                "    return t.exists(engine)\n"
+            )
+        }
+    )
+    assert [s.line for s in find_sites(repo, "sqlalchemy", {"schema.Table.exists"})] == [6]
+
+
+def test_witness_path_comes_from_the_members_own_class():
+    """Both `Table` and an unrelated `exists` are imported; the path is Table's."""
+    from mnemostack.core.reach.static import via_path
+
+    via = via_path(
+        "sqlalchemy",
+        "sql.schema.Table.exists",
+        {"exists": "sql.exists", "Table": "schema.Table"},
+        "return t.exists(engine)",
+        "exists",
+    )
+    assert via == "sqlalchemy.schema.Table.exists"
+
+
+def test_constructor_change_matches_calls_not_imports_or_subclass_declarations(tree):
+    """Declaring `class User(BaseModel)` does not run BaseModel's constructor.
+
+    Matching every mention put a `BaseModel.__init__` change on each import line
+    and model declaration in a pydantic codebase, 44 places on this repository.
+    """
+    repo = tree(
+        {
+            "m.py": (
+                "from pydantic import BaseModel\n"
+                "\n"
+                "\n"
+                "class User(BaseModel):\n"
+                "    name: str\n"
+                "\n"
+                "\n"
+                "def make():\n"
+                "    return BaseModel()\n"
+            )
+        }
+    )
+    lines = {s.line for s in find_sites(repo, "pydantic", {"main.BaseModel.__init__"})}
+    assert lines == {9}
