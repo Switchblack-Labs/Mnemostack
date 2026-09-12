@@ -14,7 +14,12 @@ import pytest
 
 from mnemostack.core.impact.api_diff import ApiChange
 from mnemostack.core.impact.propagate import Impact, Severity
-from mnemostack.core.impact.witness import uv_resolver, witness_removals
+from mnemostack.core.impact.witness import (
+    uv_probe,
+    uv_resolver,
+    witness_removals,
+    witness_signatures,
+)
 from mnemostack.core.reach import RefKind, Site
 from mnemostack.core.reach.static import via_path
 
@@ -105,3 +110,79 @@ def test_uv_resolver_really_imports_in_isolation():
     """The real witness, against a real published version."""
     verdict = uv_resolver("griffe", "1.5.0", ["griffe.load", "griffe.definitely_not_a_real_name"])
     assert verdict == {"griffe.load": True, "griffe.definitely_not_a_real_name": False}
+
+
+# --- witness_signatures: compare the running code in both versions ----------
+
+
+def _describe(signature, kind="callable", resolves=True):
+    return {"resolves": resolves, "kind": kind, "signature": signature}
+
+
+def _sig_impact(kind: str, via: str | None = "pkg.f", severity=Severity.BREAK) -> Impact:
+    site = Site(file="a.py", line=1, symbol="f", kind=RefKind.CALL, text="f()", via=via)
+    change = ApiChange(fqn="pkg.f", kind=kind, old=None, new=None)
+    return Impact(site=site, change=change, severity=severity)
+
+
+def _probe(before: dict, after: dict):
+    return lambda dist, version, paths: before if version == "1.0" else after
+
+
+def test_signature_identical_in_both_versions_is_dropped():
+    """griffe said click.Argument gained a required parameter. It did not."""
+    same = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None]])}
+    kept = witness_signatures(
+        [_sig_impact("PARAMETER_ADDED_REQUIRED")], "pkg", "1.0", "2.0", probe=_probe(same, same)
+    )
+    assert kept == []
+
+
+def test_signature_that_really_changed_is_kept():
+    before = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None]])}
+    after = {
+        "pkg.f": _describe(
+            [["x", "POSITIONAL_OR_KEYWORD", None], ["token", "POSITIONAL_OR_KEYWORD", None]]
+        )
+    }
+    impact = _sig_impact("PARAMETER_ADDED_REQUIRED")
+    kept = witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after))
+    assert kept == [impact]
+
+
+def test_kind_change_compares_kind_not_signature():
+    before = {"pkg.f": _describe(None, kind="callable")}
+    after = {"pkg.f": _describe(None, kind="class")}
+    impact = _sig_impact("OBJECT_CHANGED_KIND")
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after)) == [
+        impact
+    ]
+
+
+def test_unprobeable_break_is_demoted_not_dropped():
+    """A C extension with no signature is unverified, not wrong."""
+    blank = {"pkg.f": _describe(None)}
+    kept = witness_signatures(
+        [_sig_impact("PARAMETER_REMOVED")], "pkg", "1.0", "2.0", probe=_probe(blank, blank)
+    )
+    assert len(kept) == 1 and kept[0].severity is Severity.REVIEW
+
+
+def test_nothing_changes_when_the_probe_cannot_run_or_old_version_is_unknown():
+    impact = _sig_impact("PARAMETER_REMOVED")
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=lambda d, v, p: None) == [impact]
+    assert witness_signatures([impact], "pkg", None, "2.0", probe=lambda d, v, p: {}) == [impact]
+
+
+def test_removals_are_not_touched_by_signature_witnessing():
+    removal = _sig_impact("OBJECT_REMOVED")
+    assert witness_signatures([removal], "pkg", "1.0", "2.0", probe=lambda d, v, p: {}) == [removal]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
+def test_uv_probe_describes_a_real_signature():
+    described = uv_probe("griffe", "1.5.0", ["griffe.load"])
+    assert described is not None
+    info = described["griffe.load"]
+    assert info["resolves"] is True and info["kind"] == "callable"
+    assert any(name == "objspec" for name, _, _ in info["signature"])

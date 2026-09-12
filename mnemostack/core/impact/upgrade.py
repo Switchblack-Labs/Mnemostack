@@ -291,12 +291,24 @@ def check_upgrade(
 
     # Imported here rather than at the top to keep witness, which depends on
     # propagate, out of the import path of anything that only needs the diff.
-    from mnemostack.core.impact.witness import witness_removals
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as installed_version
+
+    from mnemostack.core.impact.witness import witness_removals, witness_signatures
 
     # A removal is only reported if the import the code actually uses fails in
     # the target version. Measured across twenty repos we did not write, griffe's
     # removals were mostly re-exports that still import fine.
     impacts, unwitnessed = witness_removals(narrow(impact_report(sites, real)), dist, to_version)
+
+    # Signature and kind changes are compared on the running code in both
+    # versions. The ones that survived removal witnessing were griffe misreports
+    # like click.Argument gaining a required parameter it does not have.
+    try:
+        old_version = from_version or installed_version(dist)
+    except PackageNotFoundError:
+        old_version = None
+    impacts = witness_signatures(impacts, dist, old_version, to_version)
 
     return UpgradeReport(
         package=package,
