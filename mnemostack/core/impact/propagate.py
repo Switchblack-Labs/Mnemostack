@@ -111,6 +111,13 @@ def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
     for site in sites:
         leaf = site.symbol.split(".")[-1]
         for change in by_symbol.get(leaf, ()):
+            # The leaf only narrows candidates; the match is on the full path.
+            # Matching on the leaf alone made every `__init__`, `execute` and
+            # `copy` in a package answer for every call with that name, across
+            # unrelated classes. Measured over 20 repos we did not write, that
+            # was most of the click and sqlalchemy false positives.
+            if change.fqn != site.symbol and not change.fqn.endswith(f".{site.symbol}"):
+                continue
             severity = severity_of(change, site.kind)
             if severity is Severity.NONE:
                 continue

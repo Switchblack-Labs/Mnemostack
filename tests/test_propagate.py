@@ -101,3 +101,19 @@ def test_sites_touching_nothing_changed_are_absent():
         impact_report([site(RefKind.CALL, "untouched")], [change("OBJECT_REMOVED", "lib.gone")])
         == []
     )
+
+
+def test_a_change_matches_only_its_own_symbol_not_every_same_named_one():
+    """`Option.__init__` changing says nothing about `CliRunner()`.
+
+    Matching on the last component made every `__init__`, `execute` and `copy`
+    in a package answer for every call with that name. Over twenty repos we did
+    not write, that flagged hundreds of constructor calls in click's own tests,
+    `CliRunner()` among them, none of them broken.
+    """
+    changes = [change("PARAMETER_ADDED_REQUIRED", "click.core.Option.__init__")]
+    sites = [
+        site(RefKind.CALL, symbol="testing.CliRunner.__init__", line=1),
+        site(RefKind.CALL, symbol="core.Option.__init__", line=2),
+    ]
+    assert [i.site.line for i in impact_report(sites, changes)] == [2]

@@ -47,3 +47,13 @@ class Site:
     between sites your tests will catch and sites they will not, is the one
     thing a test suite cannot tell you about itself.
     """
+    via: str | None = None
+    """The dotted path, package included, that this code reaches the symbol by.
+
+    griffe names where a symbol is defined; code names where it imports it from.
+    Those differ whenever a package re-exports, which is most of the time, and a
+    witness has to test the path the code actually uses:
+    `pydantic.error_wrappers.ValidationError` is gone in v2, while
+    `from pydantic import ValidationError` works fine. None when the line reaches
+    the symbol through an object whose type a line of source does not reveal.
+    """

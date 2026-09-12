@@ -22,7 +22,7 @@ from importlib.metadata import PackageNotFoundError, packages_distributions, ver
 from pathlib import Path
 
 from mnemostack.core.impact.upgrade import UpgradeError, UpgradeReport, check_upgrade
-from mnemostack.core.reach.static import SKIP_DIRS
+from mnemostack.core.reach.static import SKIP_DIRS, parse_source
 
 PYPI = "https://pypi.org/pypi/{name}/json"
 
@@ -68,8 +68,10 @@ def imported_roots(repo: Path) -> set[str]:
         if any(part in SKIP_DIRS for part in path.relative_to(repo).parts):
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, SyntaxError):
+            tree = parse_source(path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+        if tree is None:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
