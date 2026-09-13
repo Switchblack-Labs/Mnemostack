@@ -100,12 +100,7 @@ def severity_of(change: ApiChange, kind: RefKind) -> Severity:
 
 
 def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
-    """Affected sites, worst first, one entry per place-and-change.
-
-    Uncovered sites sort ahead of covered ones at equal severity. A covered site
-    will fail loudly the moment the upgrade lands, so the test suite already
-    handles it; an uncovered one is the thing nothing else will tell you.
-    """
+    """Affected sites, worst first, one entry per place and change."""
     by_symbol: dict[str, list[ApiChange]] = {}
     for change in changes:
         by_symbol.setdefault(change.fqn.split(".")[-1], []).append(change)
@@ -143,7 +138,6 @@ def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
 def _report_order(impact: Impact) -> tuple:
     return (
         _ORDER[impact.severity],
-        impact.site.covered is True,
         impact.site.file,
         impact.site.line,
     )

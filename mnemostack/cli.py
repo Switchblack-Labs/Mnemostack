@@ -89,8 +89,8 @@ def upgrade_check(argv: list[str]) -> int:
         prog="mnemostack upgrade-check",
         description="Show which symbols in your code an upgrade would touch.",
     )
-    parser.add_argument("package", help="import name, e.g. tree_sitter")
-    parser.add_argument("to_version", help="version to upgrade to, e.g. 0.26.0")
+    parser.add_argument("package", help="import name, e.g. pydantic")
+    parser.add_argument("to_version", help="version to upgrade to, e.g. 2.9.2")
     parser.add_argument("--from-version", default=None, help="default: installed")
     parser.add_argument("--distribution", default=None, help="pypi name if it differs")
     parser.add_argument("--repo", default=".", type=Path)

@@ -17,8 +17,8 @@ def change(kind: str, fqn: str = "lib.thing", old: str | None = None) -> ApiChan
     return ApiChange(fqn=fqn, kind=kind, old=old, new=None)
 
 
-def site(kind: RefKind, symbol: str = "thing", line: int = 1, covered=None) -> Site:
-    return Site(file="app.py", line=line, symbol=symbol, kind=kind, text="x", covered=covered)
+def site(kind: RefKind, symbol: str = "thing", line: int = 1) -> Site:
+    return Site(file="app.py", line=line, symbol=symbol, kind=kind, text="x")
 
 
 def test_removed_base_is_review_for_everyone():
@@ -69,22 +69,17 @@ def test_report_matches_sites_to_changes_by_leaf_name():
     assert report[0].change.fqn == "lib.deep.module.verify"
 
 
-def test_report_is_ordered_worst_first_then_uncovered_first():
-    """Uncovered outranks covered at equal severity.
-
-    A covered site fails loudly the moment the upgrade lands, so the test suite
-    already has it. An uncovered one is the thing nothing else will tell you.
-    """
+def test_report_is_ordered_worst_first():
     changes = [change("OBJECT_REMOVED", "lib.gone"), change("RETURN_CHANGED_TYPE", "lib.shifted")]
     sites = [
-        site(RefKind.CALL, "shifted", line=1, covered=True),
-        site(RefKind.CALL, "gone", line=2, covered=True),
-        site(RefKind.CALL, "gone", line=3, covered=False),
+        site(RefKind.CALL, "shifted", line=1),
+        site(RefKind.CALL, "gone", line=2),
+        site(RefKind.CALL, "gone", line=3),
     ]
     report = impact_report(sites, changes)
 
     assert [i.severity for i in report] == [Severity.BREAK, Severity.BREAK, Severity.REVIEW]
-    assert report[0].site.covered is False, "uncovered breaks come first"
+    assert [i.site.line for i in report] == [2, 3, 1]
 
 
 def test_one_entry_per_place_and_change():

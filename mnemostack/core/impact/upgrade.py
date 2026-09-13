@@ -269,8 +269,8 @@ def check_upgrade(
     (.venv or venv), which is the question normally being asked: what does moving
     off what I have now cost me. Never mnemostack's own environment.
 
-    `sites` lets a caller supply reach measured some other way, such as from a
-    test run, instead of the static scan.
+    `sites` lets a caller supply uses found some other way instead of the static
+    scan.
     """
     env = project_environment(repo) if from_version is None or distribution is None else None
     dist = (

@@ -1,9 +1,6 @@
 """Where a codebase touches a library's symbols.
 
-Two providers answer the same question differently. Static reads the source and
-infers; runtime watches a test run and observes. Both return the same shape, so
-the report does not care which one produced it, and a project without a usable
-test suite still gets an answer.
+Sites are found by reading the source; see static.py.
 
 The interface is deliberately a list of sites rather than a graph. Every version
 of this that tried to model the code as a graph spent its budget on resolution
@@ -41,13 +38,6 @@ class Site:
     symbol: str  # the library symbol, as the user's code names it
     kind: RefKind
     text: str  # the source line, so the reader can judge without opening it
-    covered: bool | None = None
-    """Whether the test suite exercises this site.
-
-    None when nothing measured it. The runtime provider sets it; that split,
-    between sites your tests will catch and sites they will not, is the one
-    thing a test suite cannot tell you about itself.
-    """
     via: str | None = None
     """The dotted path, package included, that this code reaches the symbol by.
 
