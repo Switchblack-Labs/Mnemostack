@@ -57,3 +57,11 @@ class Site:
     `from pydantic import ValidationError` works fine. None when the line reaches
     the symbol through an object whose type a line of source does not reveal.
     """
+    guarded: bool = False
+    """Whether the code hedges on this symbol being there.
+
+    A line inside a compatibility shim, `try: from x import new / except
+    ImportError: from x import old` or `if hasattr(x, "new"): ... else: x.old`,
+    was written expecting the symbol to disappear. Its removal is a line to clean
+    up, not a break.
+    """

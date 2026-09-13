@@ -179,6 +179,64 @@ def via_path(
     return None
 
 
+_FALLBACK_ERRORS = frozenset({"ImportError", "ModuleNotFoundError", "AttributeError"})
+
+
+def _import_bindings(statements: list[ast.stmt]) -> set[str]:
+    names: set[str] = set()
+    for statement in statements:
+        for node in ast.walk(statement):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names |= {a.asname or a.name.split(".")[0] for a in node.names}
+    return names
+
+
+def compat_guards(tree: ast.AST) -> tuple[set[int], set[str]]:
+    """Lines inside compatibility shims, and names the shims bind either way.
+
+    Two shapes, both found guarding removals across twenty repositories we did
+    not write: mkdocs's `try: from jinja2 import pass_context as contextfilter /
+    except ImportError: from jinja2 import contextfilter`, and starlette's
+    `if hasattr(jinja2, "pass_context"): ... else: jinja2.contextfunction`.
+
+    A try only counts when a handler offers an alternative. `except ImportError:
+    raise ImportError("install jinja2")` is an optional dependency, not a shim,
+    and counting it would hedge every use of the package in the module.
+
+    A name imported in both the try and a handler is hedged wherever it is used,
+    which is how mkdocs's `@contextfilter` decorators work on either version. A
+    handler that sets `np = None` binds by assignment and hedges nothing.
+    """
+    lines: set[int] = set()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            fallbacks = []
+            for handler in node.handlers:
+                types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+                caught = {getattr(t, "id", None) or getattr(t, "attr", None) for t in types}
+                offers_alternative = not all(isinstance(s, ast.Raise) for s in handler.body)
+                if caught & _FALLBACK_ERRORS and offers_alternative:
+                    fallbacks.append(handler)
+            if not fallbacks:
+                continue
+            region = [*node.body, *(s for h in fallbacks for s in h.body)]
+            tried = _import_bindings(node.body)
+            names |= {n for h in fallbacks for n in _import_bindings(h.body) & tried}
+        elif isinstance(node, ast.If) and any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "hasattr"
+            for n in ast.walk(node.test)
+        ):
+            # ponytail: hasattr only; version comparisons (sys.version_info,
+            # __version__ >= ...) are not recognised, add them when a real shim needs it
+            region = [*node.body, *node.orelse]
+        else:
+            continue
+        for statement in region:
+            lines.update(range(statement.lineno, (statement.end_lineno or statement.lineno) + 1))
+    return lines, names
+
+
 _IMPORT_LINE = re.compile(r"\s*(?:from\s+[\w.]+\s+)?import\s")
 
 
@@ -308,6 +366,12 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
             wanted.setdefault(pattern, (leaf, bare, set()))[2].add(symbol)
 
         relative = path.relative_to(repo).as_posix()
+        guard_lines, guard_names = compat_guards(tree)
+        hedged = (
+            re.compile(rf"(?<![\w.])(?:{'|'.join(sorted(map(re.escape, guard_names)))})\b")
+            if guard_names
+            else None
+        )
         # Match against code only, but report the real line: `text` keeps what
         # was actually written, for the reader and for narrow()'s keyword check.
         raw_lines = source.splitlines()
@@ -316,6 +380,7 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
             if not line.strip():
                 continue  # blank, or nothing left once strings and comments go
             is_import = _IMPORT_LINE.match(line) is not None
+            guarded = lineno in guard_lines or bool(hedged and hedged.search(line))
             for pattern, (leaf, bare, owners) in wanted.items():
                 if is_import and not bare:
                     continue  # a dotted module path in an import names no attribute
@@ -331,6 +396,7 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
                             kind=kind,
                             text=stripped[:200],
                             via=via_path(package, symbol, imports, line, leaf),
+                            guarded=guarded,
                         )
                     )
     return sites

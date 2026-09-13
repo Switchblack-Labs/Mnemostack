@@ -121,6 +121,11 @@ def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
             severity = severity_of(change, site.kind)
             if severity is Severity.NONE:
                 continue
+            if site.guarded and severity is Severity.BREAK:
+                # A compatibility shim already expects this change; the line is
+                # cleanup, not a break. Across twenty repos, two of the three
+                # removals the witness confirmed were exactly this.
+                severity = Severity.REVIEW
             key = (site.file, site.line, change.fqn)
             current = found.get(key)
             if current is None or _ORDER[severity] < _ORDER[current.severity]:

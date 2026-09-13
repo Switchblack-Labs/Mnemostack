@@ -117,3 +117,9 @@ def test_a_change_matches_only_its_own_symbol_not_every_same_named_one():
         site(RefKind.CALL, symbol="core.Option.__init__", line=2),
     ]
     assert [i.site.line for i in impact_report(sites, changes)] == [2]
+
+
+def test_a_break_inside_a_compatibility_shim_is_review():
+    guarded = Site(file="app.py", line=1, symbol="thing", kind=RefKind.CALL, text="x", guarded=True)
+    (impact,) = impact_report([guarded], [change("OBJECT_REMOVED")])
+    assert impact.severity is Severity.REVIEW
