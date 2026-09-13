@@ -69,7 +69,7 @@ def _impact(kind: str, via: str | None, line: int = 1) -> Impact:
 
 
 def test_removal_whose_path_still_resolves_is_dropped():
-    kept, unwitnessed = witness_removals(
+    kept, unwitnessed, _ = witness_removals(
         [_impact("OBJECT_REMOVED", "pkg.Still")],
         "pkg",
         "2.0",
@@ -80,13 +80,15 @@ def test_removal_whose_path_still_resolves_is_dropped():
 
 def test_removal_whose_path_fails_is_kept():
     impact = _impact("OBJECT_REMOVED", "pkg.Gone")
-    kept, _ = witness_removals([impact], "pkg", "2.0", resolve=lambda d, v, p: {"pkg.Gone": False})
+    kept, _, _ = witness_removals(
+        [impact], "pkg", "2.0", resolve=lambda d, v, p: {"pkg.Gone": False}
+    )
     assert kept == [impact]
 
 
 def test_unwitnessable_removal_is_dropped_and_counted():
     """At three percent measured precision, an unverifiable removal is noise."""
-    kept, unwitnessed = witness_removals(
+    kept, unwitnessed, _ = witness_removals(
         [_impact("OBJECT_REMOVED", None)], "pkg", "2.0", resolve=lambda d, v, p: {}
     )
     assert kept == [] and unwitnessed == 1
@@ -95,13 +97,13 @@ def test_unwitnessable_removal_is_dropped_and_counted():
 def test_nothing_is_dropped_if_the_witness_cannot_run():
     """Missing uv must not silently hide every finding."""
     impacts = [_impact("OBJECT_REMOVED", "pkg.Gone"), _impact("OBJECT_REMOVED", None, line=2)]
-    kept, unwitnessed = witness_removals(impacts, "pkg", "2.0", resolve=lambda d, v, p: None)
+    kept, unwitnessed, _ = witness_removals(impacts, "pkg", "2.0", resolve=lambda d, v, p: None)
     assert kept == impacts and unwitnessed == 0
 
 
 def test_non_removals_pass_through_untouched():
     other = _impact("PARAMETER_ADDED_REQUIRED", None)
-    kept, _ = witness_removals([other], "pkg", "2.0", resolve=lambda d, v, p: {})
+    kept, _, _ = witness_removals([other], "pkg", "2.0", resolve=lambda d, v, p: {})
     assert kept == [other]
 
 
@@ -243,3 +245,26 @@ def test_a_multi_line_call_is_bound_from_its_file(tmp_path):
     probe = _probe(before, after)
     assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe) == [impact]
     assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe, repo=tmp_path) == []
+
+
+# --- a removal that still imports behind a deprecation warning ---------------
+
+
+def test_removal_that_resolves_with_a_warning_is_returned_as_deprecated():
+    impact = _impact("OBJECT_REMOVED", "pkg.generics.Old")
+    kept, unwitnessed, warned = witness_removals(
+        [impact], "pkg", "2.0", resolve=lambda d, v, p: {"pkg.generics.Old": "Old moved to pkg.New"}
+    )
+    assert kept == [] and unwitnessed == 0
+    assert warned == [("pkg.generics.Old", "Old moved to pkg.New", impact.site)]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
+def test_uv_resolver_reports_pydantic_2_migration_warnings():
+    """Measured misses on dstack's and distiller's real pydantic 2 migrations."""
+    verdict = uv_resolver(
+        "pydantic", "2.9.2", ["pydantic.generics.GenericModel", "pydantic.parse_file_as"]
+    )
+    assert verdict is not None
+    assert "GenericModel" in verdict["pydantic.generics.GenericModel"]
+    assert verdict["pydantic.parse_file_as"] is False

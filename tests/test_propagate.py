@@ -123,3 +123,33 @@ def test_a_break_inside_a_compatibility_shim_is_review():
     guarded = Site(file="app.py", line=1, symbol="thing", kind=RefKind.CALL, text="x", guarded=True)
     (impact,) = impact_report([guarded], [change("OBJECT_REMOVED")])
     assert impact.severity is Severity.REVIEW
+
+
+def test_two_parameter_changes_on_one_line_are_kept_apart():
+    """pydantic 2 removes both curtail_length and regex from constr.
+
+    One slot per symbol let the first removal win, and narrow() then dropped it
+    for not passing curtail_length=, taking `constr(regex=...)` with it.
+    """
+    from mnemostack.core.impact.upgrade import narrow
+
+    changes = [
+        change("PARAMETER_REMOVED", old="[keyword-only] curtail_length: int = None"),
+        change("PARAMETER_REMOVED", old="[keyword-only] regex: str = None"),
+    ]
+    line = Site(file="app.py", line=1, symbol="thing", kind=RefKind.CALL, text="thing(regex='x')")
+    (kept,) = narrow(impact_report([line], changes))
+    assert "regex" in kept.change.old
+
+
+def test_collapse_keeps_the_worst_surviving_change_per_place():
+    from mnemostack.core.impact.propagate import collapse
+
+    line = site(RefKind.CALL)
+    report = impact_report(
+        [line],
+        [change("PARAMETER_CHANGED_DEFAULT"), change("PARAMETER_REMOVED", old="[positional] x")],
+    )
+    assert len(report) == 2
+    (worst,) = collapse(report)
+    assert worst.severity is Severity.BREAK

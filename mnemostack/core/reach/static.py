@@ -279,8 +279,15 @@ def _receivers(owner: str, imports: dict[str, str], code: str) -> set[str]:
     return names
 
 
-def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
+def find_sites(
+    repo: Path, package: str, symbols: set[str], members: set[str] | None = None
+) -> list[Site]:
     """Every place in `repo` that touches one of `symbols` from `package`.
+
+    `members` are the symbols whose owner is a class, as the library's API says.
+    Without it, a capitalised owner is taken to be a class, which is wrong for
+    sqlalchemy's `array` and `func`: spelled lowercase, `array.append` fell to
+    matching any `.append`, and on onegov-cloud that was 46 BREAKs on list appends.
 
     `symbols` are dotted paths below the package, e.g. {"Session.request",
     "get", "adapters.HTTPAdapter"}. A site matches when the file imports
@@ -350,7 +357,9 @@ def find_sites(repo: Path, package: str, symbols: set[str]) -> list[Site]:
                 bare = False
                 alternation = "|".join(sorted(map(re.escape, names)))
                 pattern = rf"(?<![\w.])(?:{alternation})\s*\("
-            elif len(parts) > 1 and parts[-2][:1].isupper():
+            elif len(parts) > 1 and (
+                symbol in members if members is not None else parts[-2][:1].isupper()
+            ):
                 owner = parts[-2]
                 if owner not in receiver_cache:
                     receiver_cache[owner] = _receivers(owner, imports, file_code)

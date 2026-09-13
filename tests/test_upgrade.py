@@ -306,3 +306,13 @@ def test_a_bounded_walk_survives_an_import_cycle(tmp_path: Path):
     (pkg / "sub" / "__init__.py").write_text("import paylib\n\n\ndef thing():\n    return 1\n")
 
     assert deprecated_symbols(griffe.load("paylib", search_paths=[root])) == {}
+
+
+def test_class_members_are_read_from_the_api():
+    import griffe
+
+    from mnemostack.core.impact.upgrade import class_members
+
+    code = "class array:\n    def append(self): ...\n\ndef helper(): ...\n"
+    with griffe.temporary_visited_module(code) as module:
+        assert class_members(module, {"array.append", "helper", "gone.thing"}) == {"array.append"}
