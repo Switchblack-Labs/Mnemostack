@@ -196,7 +196,7 @@ def test_no_installed_version_is_an_error_naming_where_it_looked(tmp_path: Path,
 
 
 def test_check_upgrade_accepts_externally_measured_sites(tmp_path: Path):
-    """The seam a test-run-based reach provider plugs into."""
+    """A caller may supply sites found some other way instead of the static scan."""
     (tmp_path / "app.py").write_text("import griffe\n")
     report = check_upgrade(
         repo=tmp_path,

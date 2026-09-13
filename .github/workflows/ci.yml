@@ -27,7 +27,6 @@ jobs:
         run: uv run ruff check .
 
       - name: Test
-        # The suite is offline by design: embeddings are stubbed by a fixture, so
-        # no model server is needed here. Retrieval quality is measured
-        # separately by evals/run_eval.py, which does need one.
+        # A few tests install real published packages through uv to check the
+        # probe against them; they skip where uv is not available.
         run: uv run pytest -q
