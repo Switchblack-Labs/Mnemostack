@@ -40,8 +40,8 @@ def test_required_keyword_only_must_be_passed():
     assert binds(params, positional=1, keywords=["mode"]) is True
 
 
-def test_leading_self_is_implicit():
-    assert binds([["self", PK, None], ["x", PK, None]], positional=1, keywords=[]) is True
+def test_a_parameter_named_self_is_not_special():
+    assert binds([["self", PK, None], ["x", PK, None]], positional=1, keywords=[]) is False
 
 
 def test_defaults_fill_what_the_call_leaves_out():
@@ -73,7 +73,6 @@ def test_a_call_split_across_lines_is_undecidable():
 def test_constructor_change_binds_against_the_class_call():
     """flask's click.Option(...) fits click 8's changed constructor."""
     new = [
-        ["self", PK, None],
         ["param_decls", PK, "None"],
         ["show_default", PK, "None"],
         ["is_flag", PK, "None"],
@@ -93,7 +92,7 @@ def test_a_call_split_across_lines_binds_from_the_file():
     import ast
 
     source = 'opt = click.Option(\n    ["--name"],\n    is_flag=True,\n)\n'
-    new = [["self", PK, None], ["param_decls", PK, "None"], ["attrs", "VAR_KEYWORD", None]]
+    new = [["param_decls", PK, "None"], ["attrs", "VAR_KEYWORD", None]]
     tree = ast.parse(source)
     assert still_binds("opt = click.Option(", "click.core.Option.__init__", new) is None
     assert still_binds("", "click.core.Option.__init__", new, tree=tree, line=1) is True

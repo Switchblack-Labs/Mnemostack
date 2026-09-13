@@ -243,7 +243,9 @@ def test_a_multi_line_call_is_bound_from_its_file(tmp_path):
     after = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None], ["y", "KEYWORD_ONLY", "0"]])}
     impact = _call_impact("x = f(")
     probe = _probe(before, after)
-    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe) == [impact]
+    # From the line alone the call is undecided: the change stands, graded REVIEW.
+    (undecided,) = witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe)
+    assert undecided.severity is Severity.REVIEW
     assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe, repo=tmp_path) == []
 
 
@@ -268,3 +270,60 @@ def test_uv_resolver_reports_pydantic_2_migration_warnings():
     assert verdict is not None
     assert "GenericModel" in verdict["pydantic.generics.GenericModel"]
     assert verdict["pydantic.parse_file_as"] is False
+
+
+# --- removed parameters, decided by binding rather than by reading one line --
+
+
+def test_a_multi_line_call_passing_a_removed_parameter_is_kept(tmp_path):
+    """`post(\\n "u",\\n verify=False,\\n)` with verify removed was silently dropped."""
+    (tmp_path / "a.py").write_text('f(\n    "u",\n    verify=False,\n)\n')
+    before = {
+        "pkg.f": _describe(
+            [["url", "POSITIONAL_OR_KEYWORD", None], ["verify", "POSITIONAL_OR_KEYWORD", "True"]]
+        )
+    }
+    after = {"pkg.f": _describe([["url", "POSITIONAL_OR_KEYWORD", None]])}
+    impact = _call_impact("f(", kind="PARAMETER_REMOVED")
+    kept = witness_signatures(
+        [impact], "pkg", "1.0", "2.0", probe=_probe(before, after), repo=tmp_path
+    )
+    assert kept == [impact]
+
+
+def test_a_positional_call_reaching_a_removed_positional_parameter_is_kept():
+    before = {
+        "pkg.f": _describe(
+            [["a", "POSITIONAL_OR_KEYWORD", None], ["b", "POSITIONAL_OR_KEYWORD", "0"]]
+        )
+    }
+    after = {"pkg.f": _describe([["a", "POSITIONAL_OR_KEYWORD", None]])}
+    reaching = _call_impact("f(1, 2)", kind="PARAMETER_REMOVED")
+    short = _call_impact("f(1)", kind="PARAMETER_REMOVED")
+    kept = witness_signatures([reaching, short], "pkg", "1.0", "2.0", probe=_probe(before, after))
+    assert kept == [reaching]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
+def test_uv_probe_drops_a_methods_instance_parameter():
+    """Binding used to skip a first parameter only when it was spelled `self`."""
+    described = uv_probe("griffe", "1.5.0", ["griffe.GriffeLoader.load"])
+    assert described is not None
+    names = [name for name, _, _ in described["griffe.GriffeLoader.load"]["signature"]]
+    assert names and names[0] != "self"
+
+
+def test_a_call_whose_arguments_are_not_in_the_source_is_review_not_break():
+    """`Column(sa_type, *args, **kwargs)`: the change is real, the break is not shown.
+
+    narrow() used to drop these silently; binding cannot decide them either way.
+    """
+    before = {
+        "pkg.f": _describe(
+            [["a", "POSITIONAL_OR_KEYWORD", None], ["b", "POSITIONAL_OR_KEYWORD", "0"]]
+        )
+    }
+    after = {"pkg.f": _describe([["a", "POSITIONAL_OR_KEYWORD", None]])}
+    impact = _call_impact("f(x, *args)", kind="PARAMETER_REMOVED")
+    (kept,) = witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after))
+    assert kept.severity is Severity.REVIEW

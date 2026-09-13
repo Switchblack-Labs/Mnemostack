@@ -95,12 +95,10 @@ def binds(params: list, positional: int, keywords: list[str]) -> bool:
     """Whether a call passing this many positionals and these keywords binds.
 
     `params` are (name, kind, default) as the probe reports them, where default
-    is None when the parameter has none. A leading `self` is skipped: the probe
-    describes a method as it sits on the class, and the call passes it implicitly.
+    is None when the parameter has none. A method's instance parameter is not
+    among them: the probe drops it by what the object is, not by its name.
     """
     params = [tuple(p) for p in params]
-    if params and params[0][0] == "self":
-        params = params[1:]
 
     slots = [p for p in params if p[1] in POSITIONAL]
     var_positional = any(p[1] == "VAR_POSITIONAL" for p in params)

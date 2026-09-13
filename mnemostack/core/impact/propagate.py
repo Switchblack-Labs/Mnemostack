@@ -71,6 +71,9 @@ _TRANSMISSION: dict[tuple[str, RefKind], Severity] = {
     # the value calls it, which is past what a line of source shows.
     ("OBJECT_REMOVED", RefKind.ANNOTATION): Severity.BREAK,
     ("OBJECT_REMOVED", RefKind.MENTION): Severity.BREAK,
+    # Importing it. A removed name fails on the import itself; any other change
+    # only matters where the name is used, and each use is a site of its own.
+    ("OBJECT_REMOVED", RefKind.IMPORT): Severity.BREAK,
     ("OBJECT_CHANGED_KIND", RefKind.ANNOTATION): Severity.REVIEW,
     ("OBJECT_CHANGED_KIND", RefKind.MENTION): Severity.REVIEW,
     ("PARAMETER_ADDED_REQUIRED", RefKind.MENTION): Severity.REVIEW,
@@ -151,7 +154,7 @@ def collapse(impacts: list[Impact]) -> list[Impact]:
 
     Run last. Reducing a place to one change before the filters had judged each
     change let pydantic 2's constr keep its `curtail_length` removal as the
-    representative; narrow() then dropped it for not passing curtail_length=,
+    representative; a filter then dropped it for not passing curtail_length=,
     and `constr(regex=...)`, which does break, went with it. Measured on dstack's
     real pydantic 2 migration.
     """

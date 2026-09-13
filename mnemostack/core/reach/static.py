@@ -237,9 +237,6 @@ def compat_guards(tree: ast.AST) -> tuple[set[int], set[str]]:
     return lines, names
 
 
-_IMPORT_LINE = re.compile(r"\s*(?:from\s+[\w.]+\s+)?import\s")
-
-
 def _receivers(owner: str, imports: dict[str, str], code: str) -> set[str]:
     """Names in this file that can refer to class `owner` or hold an instance of it.
 
@@ -332,9 +329,8 @@ def find_sites(
 
         # One pattern per way the source can name a symbol. A directly imported
         # name is written bare. A member of a class is written `receiver.member`
-        # with a grounded receiver. Anything else reached through an object is
-        # written as an attribute, which at least stops a module-level change
-        # matching every call to a same-named builtin.
+        # with a grounded receiver. Anything else is an attribute path starting
+        # from a name this file imported: `requests.get`, `sa.orm.relationship`.
         wanted: dict[str, tuple[str, bool, set[str]]] = {}
         for symbol in reachable:
             parts = symbol.split(".")
@@ -371,10 +367,23 @@ def find_sites(
                 pattern = rf"(?<![\w.])(?:{alternation})\.{re.escape(leaf)}\b"
             else:
                 bare = leaf in bound
-                pattern = rf"\b{re.escape(leaf)}\b" if bare else rf"\.{re.escape(leaf)}\b"
+                if bare:
+                    pattern = rf"\b{re.escape(leaf)}\b"
+                else:
+                    # Any `.get` at all matched `cfg.get("token")` for a change to
+                    # requests.get. The path has to start from an imported name.
+                    alternation = "|".join(sorted(map(re.escape, imports)))
+                    pattern = rf"(?<![\w.])(?:{alternation})(?:\.\w+)*\.{re.escape(leaf)}\b"
             wanted.setdefault(pattern, (leaf, bare, set()))[2].add(symbol)
 
         relative = path.relative_to(repo).as_posix()
+        # From the parse, so every line of `from x import (\n a,\n b,\n)` counts.
+        import_lines = {
+            n
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for n in range(node.lineno, (node.end_lineno or node.lineno) + 1)
+        }
         guard_lines, guard_names = compat_guards(tree)
         hedged = (
             re.compile(rf"(?<![\w.])(?:{'|'.join(sorted(map(re.escape, guard_names)))})\b")
@@ -382,20 +391,20 @@ def find_sites(
             else None
         )
         # Match against code only, but report the real line: `text` keeps what
-        # was actually written, for the reader and for narrow()'s keyword check.
+        # was actually written, for the reader.
         raw_lines = source.splitlines()
         for lineno, line in enumerate(code, start=1):
             stripped = raw_lines[lineno - 1].strip() if lineno <= len(raw_lines) else ""
             if not line.strip():
                 continue  # blank, or nothing left once strings and comments go
-            is_import = _IMPORT_LINE.match(line) is not None
+            is_import = lineno in import_lines
             guarded = lineno in guard_lines or bool(hedged and hedged.search(line))
             for pattern, (leaf, bare, owners) in wanted.items():
                 if is_import and not bare:
                     continue  # a dotted module path in an import names no attribute
                 if not re.search(pattern, line):
                     continue
-                kind = _kind(line, leaf)
+                kind = RefKind.IMPORT if is_import else _kind(line, leaf)
                 for symbol in owners:
                     sites.append(
                         Site(

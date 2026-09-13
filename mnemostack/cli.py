@@ -26,41 +26,42 @@ def _fmt(impacts) -> list[str]:
     knows it; the one touching two places is the one they do not. Measured on a
     real repo, the loudest finding covered 56 of 56 sites and carried nothing.
     """
-    # Keyed on the symbol's last component, not its full path. griffe reaches
-    # one symbol through every module that re-exports it, so `FastMCP` arrives
-    # as both `mcp.server.FastMCP` and `mcp.server.fastmcp.FastMCP` and would
-    # otherwise be printed twice, for the same two lines, as two findings.
-    grouped: dict[tuple[str, str, str], list] = {}
-    labels: dict[tuple[str, str, str], str] = {}
-    for impact in impacts:
-        key = (impact.severity.value, impact.change.kind, impact.change.fqn.split(".")[-1])
-        grouped.setdefault(key, []).append(impact.site)
-        shortest = labels.get(key)
-        if shortest is None or impact.change.fqn.count(".") < shortest.count("."):
-            labels[key] = impact.change.fqn
-
     lines: list[str] = []
-    for key, sites in sorted(
-        grouped.items(), key=lambda kv: (_ORDER.get(kv[0][0], 9), len(kv[1]), kv[0][2])
+    groups = finding_groups(impacts)
+    for (severity, kind, _, _), (label, places) in sorted(
+        groups.items(), key=lambda kv: (_ORDER.get(kv[0][0], 9), len(kv[1][1]), kv[0][2])
     ):
-        severity, kind, _ = key
-        lines.append(f"  [{severity.upper():6}] {kind}  {labels[key]}")
-        seen_lines = set()
-        for site in sites[:5]:
-            if (site.file, site.line) in seen_lines:
-                continue
-            seen_lines.add((site.file, site.line))
-            cover = ""
-            if site.covered is False:
-                cover = "  (not covered by tests)"
-            elif site.covered is True:
-                cover = "  (covered)"
-            lines.append(f"           {site.file}:{site.line}{cover}")
+        lines.append(f"  [{severity.upper():6}] {kind}  {label}")
+        for site in places[:5]:
+            lines.append(f"           {site.file}:{site.line}")
             lines.append(f"             {site.text}")
-        if len(sites) > 5:
-            lines.append(f"           ... and {len(sites) - 5} more")
+        if len(places) > 5:
+            lines.append(f"           ... and {len(places) - 5} more")
         lines.append("")
     return lines
+
+
+def finding_groups(impacts) -> dict[tuple, tuple[str, list]]:
+    """(severity, kind, name, places) -> (label, one site per place).
+
+    griffe reaches one symbol through every module that re-exports it, so
+    `FastMCP` arrives as both `mcp.server.FastMCP` and `mcp.server.fastmcp.FastMCP`
+    at the same lines; those fold into one finding under the shortest path.
+    Different symbols that share a name, `Session.close` and `Connection.close`,
+    reach different lines and stay apart. Keying on the name alone merged them.
+    """
+    per_change: dict[tuple[str, str, str], dict] = {}
+    for impact in impacts:
+        key = (impact.severity.value, impact.change.kind, impact.change.fqn)
+        per_change.setdefault(key, {}).setdefault((impact.site.file, impact.site.line), impact.site)
+
+    groups: dict[tuple, tuple[str, list]] = {}
+    for (severity, kind, fqn), sites in per_change.items():
+        key = (severity, kind, fqn.split(".")[-1], frozenset(sites))
+        current = groups.get(key)
+        if current is None or fqn.count(".") < current[0].count("."):
+            groups[key] = (fqn, list(sites.values()))
+    return groups
 
 
 def _fmt_deprecations(deprecations) -> list[str]:
@@ -111,10 +112,11 @@ def upgrade_check(argv: list[str]) -> int:
         return 2
 
     dropped = report.total_changes - report.verified_changes
-    note = f" ({dropped} unverified dropped)" if dropped else ""
+    note = f", ignoring {dropped} removal(s) still defined in its new source" if dropped else ""
     print(
-        f"{report.package} {report.from_version} -> {report.to_version}: "
-        f"{report.verified_changes} breaking change(s){note}"
+        f"{report.package} {report.from_version} -> {report.to_version}: the library has "
+        f"{report.verified_changes} breaking API change(s){note}. Only what reaches your "
+        "code is listed."
     )
     if report.unwitnessed:
         print(
@@ -128,9 +130,8 @@ def upgrade_check(argv: list[str]) -> int:
 
     if report.impacts:
         places = len({(i.site.file, i.site.line) for i in report.impacts})
-        # Count what the reader will see, after re-exports of one symbol have
-        # been folded together, not the number of griffe paths behind it.
-        kinds = len({(i.change.kind, i.change.fqn.split(".")[-1]) for i in report.impacts})
+        # Count the findings the reader will see, not the griffe paths behind them.
+        kinds = len(finding_groups(report.impacts))
         print(f"\n  {kinds} change(s) reach your code, across {places} place(s):\n")
         print("\n".join(_fmt(report.impacts)))
     else:
@@ -150,6 +151,7 @@ def upgrade_check(argv: list[str]) -> int:
 _STATUS_NOTE = {
     "breaks": "will break your code",
     "review": "touches your code, worth a look",
+    "unverified": "possible removals could not be checked",
     "deprecations": "safe, but you use deprecated API",
     "safe": "nothing you use changed",
     "current": "already on latest",
@@ -168,21 +170,29 @@ def sweep_cmd(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     from mnemostack.core.impact.sweep import sweep
+    from mnemostack.core.impact.upgrade import UpgradeError
 
     repo = args.repo.resolve()
 
     def progress(done: int, total: int, name: str) -> None:
         print(f"\r  checking {done}/{total}: {name:<30}", end="", file=sys.stderr)
 
-    rows = sweep(repo, progress=progress)
+    try:
+        rows = sweep(repo, progress=progress)
+    except UpgradeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print("\r" + " " * 60, end="\r", file=sys.stderr)
 
     if not rows:
         print("No installed packages are imported by this repo.")
         return 0
 
-    interesting = [r for r in rows if r.status in ("breaks", "review", "deprecations")]
-    clear = [r for r in rows if r.status in ("safe", "current")]
+    interesting = [
+        r for r in rows if r.status in ("breaks", "review", "unverified", "deprecations")
+    ]
+    safe = [r for r in rows if r.status == "safe"]
+    current = [r for r in rows if r.status == "current"]
 
     for row in rows:
         if args.quiet and row.status in ("safe", "current"):
@@ -190,11 +200,13 @@ def sweep_cmd(argv: list[str]) -> int:
         arrow = f"{row.current} -> {row.latest}" if row.latest else row.current
         detail = ""
         if row.report is not None:
-            places = len(row.report.impacts)
+            places = len({(i.site.file, i.site.line) for i in row.report.impacts})
             deps = sum(len(d.sites) for d in row.report.deprecations)
             bits = []
             if places:
                 bits.append(f"{places} place(s)")
+            if row.report.unwitnessed:
+                bits.append(f"{row.report.unwitnessed} unverified removal(s)")
             if deps:
                 bits.append(f"{deps} deprecated use(s)")
             detail = f"  [{', '.join(bits)}]" if bits else ""
@@ -203,7 +215,8 @@ def sweep_cmd(argv: list[str]) -> int:
         print(f"  {row.status:<13} {row.distribution:<22} {arrow:<24}{detail}")
 
     print(
-        f"\n  {len(clear)} of {len(rows)} can be taken with nothing to change. "
+        f"\n  {len(safe)} of {len(rows) - len(current)} available upgrade(s) can be taken "
+        f"with nothing to change; {len(current)} already current. "
         f"{len(interesting)} need attention."
     )
     return 1 if any(r.status == "breaks" for r in rows) else 0
