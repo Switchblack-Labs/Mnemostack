@@ -406,3 +406,76 @@ def test_constructor_change_matches_calls_not_imports_or_subclass_declarations(t
     )
     lines = {s.line for s in find_sites(repo, "pydantic", {"main.BaseModel.__init__"})}
     assert lines == {9}
+
+
+# --- compatibility shims ----------------------------------------------------
+
+
+def test_import_fallback_shim_guards_its_lines_and_the_name_it_binds(tree):
+    """mkdocs: the removed name is only reached if the new one is missing."""
+    repo = tree(
+        {
+            "t.py": (
+                "try:\n"
+                "    from jinja2 import pass_context as contextfilter\n"
+                "except ImportError:\n"
+                "    from jinja2 import contextfilter\n"
+                "\n"
+                "@contextfilter\n"
+                "def url(ctx): ...\n"
+            )
+        }
+    )
+    sites = find_sites(repo, "jinja2", {"filters.contextfilter"})
+    assert {s.line for s in sites} == {2, 4, 6}
+    assert all(s.guarded for s in sites)
+
+
+def test_hasattr_branches_are_guarded(tree):
+    """starlette: `else: jinja2.contextfunction` runs only on old jinja2."""
+    repo = tree(
+        {
+            "t.py": (
+                "import jinja2\n"
+                "if hasattr(jinja2, 'pass_context'):\n"
+                "    ctx = jinja2.pass_context\n"
+                "else:\n"
+                "    ctx = jinja2.contextfunction\n"
+            )
+        }
+    )
+    (site,) = find_sites(repo, "jinja2", {"utils.contextfunction"})
+    assert site.line == 5 and site.guarded
+
+
+def test_optional_dependency_check_is_not_a_shim(tree):
+    """`except ImportError: raise` offers no alternative, so nothing is hedged."""
+    repo = tree(
+        {
+            "t.py": (
+                "try:\n"
+                "    from jinja2 import contextfunction\n"
+                "except ImportError:\n"
+                "    raise ImportError('install jinja2')\n"
+                "contextfunction(f)\n"
+            )
+        }
+    )
+    sites = find_sites(repo, "jinja2", {"utils.contextfunction"})
+    assert sites and not any(s.guarded for s in sites)
+
+
+def test_none_fallback_guards_the_import_but_not_later_uses(tree):
+    repo = tree(
+        {
+            "t.py": (
+                "try:\n"
+                "    from jinja2 import contextfunction\n"
+                "except ImportError:\n"
+                "    contextfunction = None\n"
+                "contextfunction(f)\n"
+            )
+        }
+    )
+    guarded = {s.line: s.guarded for s in find_sites(repo, "jinja2", {"utils.contextfunction"})}
+    assert guarded[2] is True and guarded[5] is False
