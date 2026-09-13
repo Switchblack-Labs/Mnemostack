@@ -233,3 +233,13 @@ def test_a_moved_parameter_is_not_cleared_by_binding():
     assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after)) == [
         impact
     ]
+
+
+def test_a_multi_line_call_is_bound_from_its_file(tmp_path):
+    (tmp_path / "a.py").write_text("x = f(\n    1,\n)\n")
+    before = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None]])}
+    after = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None], ["y", "KEYWORD_ONLY", "0"]])}
+    impact = _call_impact("x = f(")
+    probe = _probe(before, after)
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe) == [impact]
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=probe, repo=tmp_path) == []

@@ -11,8 +11,10 @@ So the call's literal arguments are bound against the new parameters, following
 the rules Python applies: too many positional arguments, a keyword the function
 does not take, a value given twice, or a required parameter left unfilled.
 
-It only decides what a single line of source can show. A call spread over
-several lines, or one that passes *args or **kwargs, is left undecided.
+The call is read from the parsed file when there is one, so a call spread over
+several lines binds like any other: click's own `click.Option(` calls put every
+argument on a line of its own. Only a call passing *args or **kwargs, whose
+contents the source does not show, is left undecided.
 """
 
 from __future__ import annotations
@@ -53,7 +55,17 @@ def call_shapes(text: str, name: str) -> list[tuple[int, list[str]]] | None:
             continue
     if tree is None:
         return None
+    return tree_call_shapes(tree, name)
 
+
+def tree_call_shapes(
+    tree: ast.AST, name: str, line: int | None = None
+) -> list[tuple[int, list[str]]] | None:
+    """Like call_shapes, over a parsed tree, limited to calls whose name ends on `line`.
+
+    A site's line is where the called name appears, which for a call split over
+    several lines is the line with the opening parenthesis, not where it ends.
+    """
     shapes: list[tuple[int, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -65,7 +77,7 @@ def call_shapes(text: str, name: str) -> list[tuple[int, list[str]]] | None:
             called = func.attr
         else:
             continue
-        if called != name:
+        if called != name or (line is not None and func.end_lineno != line):
             continue
         if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
             kw.arg is None for kw in node.keywords
@@ -108,15 +120,23 @@ def binds(params: list, positional: int, keywords: list[str]) -> bool:
     return all(p[0] in filled for p in params if p[1] in required and p[2] is None)
 
 
-def still_binds(text: str, fqn: str, params: list) -> bool | None:
+def still_binds(
+    text: str, fqn: str, params: list, tree: ast.AST | None = None, line: int | None = None
+) -> bool | None:
     """Whether every call to the changed symbol on this line fits `params`.
+
+    With the file's `tree` and the site's `line`, the calls are read from the
+    tree; otherwise from the line's text alone.
 
     A constructor change is reported against `X.__init__`, but the line calls
     `X(...)`, so the class name is what gets searched for.
     """
     parts = fqn.split(".")
     name = parts[-2] if parts[-1] == "__init__" and len(parts) > 1 else parts[-1]
-    shapes = call_shapes(text, name)
+    if tree is not None and line is not None:
+        shapes = tree_call_shapes(tree, name, line)
+    else:
+        shapes = call_shapes(text, name)
     if not shapes:
         return None
     return all(binds(params, positional, keywords) for positional, keywords in shapes)

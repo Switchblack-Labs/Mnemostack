@@ -17,12 +17,14 @@ that never touches the user's own:
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 from mnemostack.core.impact.propagate import Impact, Severity
 
@@ -200,6 +202,7 @@ def witness_signatures(
     old_version: str | None,
     new_version: str,
     probe: Prober = uv_probe,
+    repo: Path | None = None,
 ) -> list[Impact]:
     """Check signature and kind changes against the running code in both versions.
 
@@ -214,7 +217,26 @@ def witness_signatures(
     loudest line in the report either.
 
     If the old version is unknown or the probe cannot run, nothing changes.
+
+    With `repo`, a call is bound from its file's parse, so calls split across
+    lines are decided too; without it, only from the site's own line.
     """
+    from mnemostack.core.impact.binding import BIND_DECIDES, still_binds
+    from mnemostack.core.reach.static import parse_source
+
+    trees: dict[str, ast.Module | None] = {}
+
+    def tree_of(file: str) -> ast.Module | None:
+        if repo is None:
+            return None
+        if file not in trees:
+            try:
+                source = (repo / file).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                source = None
+            trees[file] = parse_source(source) if source is not None else None
+        return trees[file]
+
     impacts = list(impacts)
     if not old_version or not any(i.change.kind in SIGNATURE_KINDS for i in impacts):
         return impacts
@@ -245,12 +267,19 @@ def witness_signatures(
         if comparable:
             if old[field] == new[field]:
                 continue  # griffe reported a change the running code does not show
-            if field == "signature" and impact.site.kind.value == "call":
-                from mnemostack.core.impact.binding import BIND_DECIDES, still_binds
-
-                if impact.change.kind in BIND_DECIDES and (
-                    still_binds(impact.site.text, impact.change.fqn, new["signature"]) is True
-                ):
+            if (
+                field == "signature"
+                and impact.site.kind.value == "call"
+                and impact.change.kind in BIND_DECIDES
+            ):
+                fits = still_binds(
+                    impact.site.text,
+                    impact.change.fqn,
+                    new["signature"],
+                    tree=tree_of(impact.site.file),
+                    line=impact.site.line,
+                )
+                if fits is True:
                     continue  # the signature changed, and this call still fits it
             kept.append(impact)  # witnessed: the running code really changed
             continue
