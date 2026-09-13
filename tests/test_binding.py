@@ -86,3 +86,23 @@ def test_constructor_change_binds_against_the_class_call():
 def test_call_that_no_longer_fits_is_reported_as_not_binding():
     new = [["url", PK, None], ["token", PK, None]]
     assert still_binds("return connect('http://x')", "paylib.connect", new) is False
+
+
+def test_a_call_split_across_lines_binds_from_the_file():
+    """click's own click.Option( calls put each argument on its own line."""
+    import ast
+
+    source = 'opt = click.Option(\n    ["--name"],\n    is_flag=True,\n)\n'
+    new = [["self", PK, None], ["param_decls", PK, "None"], ["attrs", "VAR_KEYWORD", None]]
+    tree = ast.parse(source)
+    assert still_binds("opt = click.Option(", "click.core.Option.__init__", new) is None
+    assert still_binds("", "click.core.Option.__init__", new, tree=tree, line=1) is True
+    assert still_binds("", "click.core.Option.__init__", new, tree=tree, line=2) is None
+
+
+def test_tree_calls_that_no_longer_fit_are_reported():
+    import ast
+
+    tree = ast.parse("connect(\n    'http://x',\n)\n")
+    new = [["url", PK, None], ["token", PK, None]]
+    assert still_binds("", "paylib.connect", new, tree=tree, line=1) is False

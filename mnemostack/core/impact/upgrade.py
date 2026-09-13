@@ -308,7 +308,7 @@ def check_upgrade(
         old_version = from_version or installed_version(dist)
     except PackageNotFoundError:
         old_version = None
-    impacts = witness_signatures(impacts, dist, old_version, to_version)
+    impacts = witness_signatures(impacts, dist, old_version, to_version, repo=repo)
 
     return UpgradeReport(
         package=package,
