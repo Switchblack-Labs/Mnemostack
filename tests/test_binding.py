@@ -52,11 +52,11 @@ def test_defaults_fill_what_the_call_leaves_out():
 
 
 def test_call_shapes_reads_positionals_and_keywords():
-    assert call_shapes("x = Session('u', timeout=5)", "Session") == [(1, ["timeout"])]
+    assert call_shapes("x = Session('u', timeout=5)", "Session") == [(1, ["timeout"], False)]
 
 
 def test_call_shapes_reads_attribute_calls_and_header_lines():
-    assert call_shapes("if client.fetch(url):", "fetch") == [(1, [])]
+    assert call_shapes("if client.fetch(url):", "fetch") == [(1, [], False)]
 
 
 def test_star_arguments_are_undecidable():
@@ -106,3 +106,27 @@ def test_tree_calls_that_no_longer_fit_are_reported():
     tree = ast.parse("connect(\n    'http://x',\n)\n")
     new = [["url", PK, None], ["token", PK, None]]
     assert still_binds("", "paylib.connect", new, tree=tree, line=1) is False
+
+
+# --- **kwargs ---------------------------------------------------------------
+
+
+def test_spread_kwargs_bind_when_literals_bind_and_the_function_takes_kwargs():
+    """pydantic 2's create_model(model_name, /, *, ..., **field_definitions)."""
+    new = [["model_name", "POSITIONAL_ONLY", None], ["fields", "VAR_KEYWORD", None]]
+    assert still_binds("M = create_model(name, **fields)", "pydantic.create_model", new) is True
+
+
+def test_spread_kwargs_without_var_keyword_are_undecided():
+    new = [["model_name", PK, None], ["strict", KO, "False"]]
+    assert still_binds("create_model(name, **fields)", "pydantic.create_model", new) is None
+
+
+def test_spread_kwargs_may_supply_a_missing_required_parameter():
+    new = [["url", PK, None], ["token", KO, None], ["kw", "VAR_KEYWORD", None]]
+    assert still_binds("connect(url, **auth)", "paylib.connect", new) is None
+
+
+def test_literal_arguments_that_cannot_bind_still_do_not_bind_beside_spread_kwargs():
+    new = [["url", PK, None]]
+    assert still_binds("connect(url, extra, **auth)", "paylib.connect", new) is False

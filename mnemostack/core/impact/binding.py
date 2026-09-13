@@ -13,8 +13,13 @@ does not take, a value given twice, or a required parameter left unfilled.
 
 The call is read from the parsed file when there is one, so a call spread over
 several lines binds like any other: click's own `click.Option(` calls put every
-argument on a line of its own. Only a call passing *args or **kwargs, whose
-contents the source does not show, is left undecided.
+argument on a line of its own.
+
+A call passing **kwargs is decided when it can be: if its literal arguments
+bind and the new signature takes **kwargs as well, nothing in the dict can stop
+it binding. That settled `create_model(name, **fields)` in fastapi and
+instructor and `click.Option(decls, **kwargs)` in click. A call passing *args,
+whose positional count the source does not show, is left undecided.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ BIND_DECIDES = frozenset(
 )
 
 
-def call_shapes(text: str, name: str) -> list[tuple[int, list[str]]] | None:
+def call_shapes(text: str, name: str) -> list[tuple[int, list[str], bool]] | None:
     """(positional count, keyword names) for each call to `name` on this line.
 
     None when a line cannot decide it: it does not parse on its own, nothing on
@@ -60,13 +65,13 @@ def call_shapes(text: str, name: str) -> list[tuple[int, list[str]]] | None:
 
 def tree_call_shapes(
     tree: ast.AST, name: str, line: int | None = None
-) -> list[tuple[int, list[str]]] | None:
+) -> list[tuple[int, list[str], bool]] | None:
     """Like call_shapes, over a parsed tree, limited to calls whose name ends on `line`.
 
     A site's line is where the called name appears, which for a call split over
     several lines is the line with the opening parenthesis, not where it ends.
     """
-    shapes: list[tuple[int, list[str]]] = []
+    shapes: list[tuple[int, list[str], bool]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -79,11 +84,10 @@ def tree_call_shapes(
             continue
         if called != name or (line is not None and func.end_lineno != line):
             continue
-        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
-            kw.arg is None for kw in node.keywords
-        ):
-            return None
-        shapes.append((len(node.args), [kw.arg for kw in node.keywords if kw.arg]))
+        if any(isinstance(arg, ast.Starred) for arg in node.args):
+            return None  # *args: how many positionals arrive is not in the source
+        spread = any(kw.arg is None for kw in node.keywords)
+        shapes.append((len(node.args), [kw.arg for kw in node.keywords if kw.arg], spread))
     return shapes or None
 
 
@@ -139,4 +143,31 @@ def still_binds(
         shapes = call_shapes(text, name)
     if not shapes:
         return None
-    return all(binds(params, positional, keywords) for positional, keywords in shapes)
+
+    takes_var_keyword = any(p[1] == "VAR_KEYWORD" for p in params)
+    verdicts: list[bool | None] = []
+    for positional, keywords, spread in shapes:
+        fits: bool | None = binds(params, positional, keywords)
+        if spread:
+            # **kwargs adds keywords the source does not show. If the literal
+            # arguments already bind and the function takes **kwargs too, each
+            # extra key lands in it or fills an optional parameter, so the call
+            # still binds; a duplicate would have failed before the upgrade as
+            # well. Without **kwargs the dict may pass what is no longer
+            # accepted, so the call is undecided.
+            #
+            # Extra keywords can only ever fill a required parameter the call
+            # left out. If the literals fail even with every parameter treated
+            # as optional, too many positionals or a keyword the function does
+            # not take, nothing in the dict can rescue the call.
+            if fits:
+                fits = True if takes_var_keyword else None
+            else:
+                relaxed = [[p[0], p[1], p[2] if p[2] is not None else "<given>"] for p in params]
+                fits = None if binds(relaxed, positional, keywords) else False
+        verdicts.append(fits)
+    if False in verdicts:
+        return False
+    if None in verdicts:
+        return None
+    return True
