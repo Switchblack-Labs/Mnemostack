@@ -243,8 +243,16 @@ def witness_signatures(
             and new.get(field) is not None
         )
         if comparable:
-            if old[field] != new[field]:
-                kept.append(impact)  # witnessed: the running code really changed
+            if old[field] == new[field]:
+                continue  # griffe reported a change the running code does not show
+            if field == "signature" and impact.site.kind.value == "call":
+                from mnemostack.core.impact.binding import BIND_DECIDES, still_binds
+
+                if impact.change.kind in BIND_DECIDES and (
+                    still_binds(impact.site.text, impact.change.fqn, new["signature"]) is True
+                ):
+                    continue  # the signature changed, and this call still fits it
+            kept.append(impact)  # witnessed: the running code really changed
             continue
         if impact.severity is Severity.BREAK:
             kept.append(dataclasses.replace(impact, severity=Severity.REVIEW))

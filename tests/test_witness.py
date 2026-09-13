@@ -186,3 +186,50 @@ def test_uv_probe_describes_a_real_signature():
     info = described["griffe.load"]
     assert info["resolves"] is True and info["kind"] == "callable"
     assert any(name == "objspec" for name, _, _ in info["signature"])
+
+
+# --- a changed signature is cleared only if this call still fits it ----------
+
+
+def _call_impact(text: str, kind: str = "PARAMETER_ADDED_REQUIRED") -> Impact:
+    site = Site(file="a.py", line=1, symbol="f", kind=RefKind.CALL, text=text, via="pkg.f")
+    change = ApiChange(fqn="pkg.f", kind=kind, old=None, new=None)
+    return Impact(site=site, change=change, severity=Severity.BREAK)
+
+
+def test_changed_signature_that_this_call_still_fits_is_dropped():
+    before = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None]])}
+    after = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None], ["y", "KEYWORD_ONLY", "0"]])}
+    kept = witness_signatures(
+        [_call_impact("f(1)")], "pkg", "1.0", "2.0", probe=_probe(before, after)
+    )
+    assert kept == []
+
+
+def test_changed_signature_that_this_call_no_longer_fits_is_kept():
+    before = {"pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None]])}
+    after = {
+        "pkg.f": _describe([["x", "POSITIONAL_OR_KEYWORD", None], ["y", "KEYWORD_ONLY", None]])
+    }
+    impact = _call_impact("f(1)")
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after)) == [
+        impact
+    ]
+
+
+def test_a_moved_parameter_is_not_cleared_by_binding():
+    """It can bind while handing a positional argument to a different parameter."""
+    before = {
+        "pkg.f": _describe(
+            [["a", "POSITIONAL_OR_KEYWORD", None], ["b", "POSITIONAL_OR_KEYWORD", None]]
+        )
+    }
+    after = {
+        "pkg.f": _describe(
+            [["b", "POSITIONAL_OR_KEYWORD", None], ["a", "POSITIONAL_OR_KEYWORD", None]]
+        )
+    }
+    impact = _call_impact("f(1, 2)", kind="PARAMETER_MOVED")
+    assert witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after)) == [
+        impact
+    ]
