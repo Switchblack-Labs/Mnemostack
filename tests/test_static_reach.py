@@ -193,7 +193,7 @@ def test_unparseable_file_does_not_stop_the_scan(tree):
 
 
 def test_sites_carry_their_own_line_text(tree):
-    """The report shows the line, and narrow() re-reads it instead of the file."""
+    """The report shows the line the reader has to look at."""
     repo = tree({"app.py": "from requests import get\n\n\ndef go():\n    return get(timeout=5)\n"})
     site = next(s for s in find_sites(repo, "requests", {"get"}) if s.line == 5)
     assert "timeout=5" in site.text
@@ -497,3 +497,15 @@ def test_class_membership_comes_from_the_api_not_capitalisation(tree):
     )
     symbol = "dialects.postgresql.array.array.append"
     assert {s.line for s in find_sites(repo, "sqlalchemy", {symbol}, members={symbol})} == {6}
+
+
+def test_an_attribute_on_an_object_the_file_did_not_import_is_not_the_librarys(tree):
+    """`cfg.get("token")` was reported for a change to requests.get."""
+    repo = tree({"app.py": "import requests\n\ncfg = {}\ncfg.get('token')\nrequests.get('u')\n"})
+    assert {s.line for s in find_sites(repo, "requests", {"api.get"})} == {5}
+
+
+def test_every_line_of_an_import_is_an_import(tree):
+    repo = tree({"app.py": "from requests import (\n    Session,\n    get,\n)\nget('u')\n"})
+    kinds = {s.line: s.kind for s in find_sites(repo, "requests", {"get"})}
+    assert kinds == {3: RefKind.IMPORT, 5: RefKind.CALL}

@@ -28,6 +28,7 @@ class RefKind(str, Enum):
     CALL = "call"  # name(...)
     SUBCLASS = "subclass"  # class X(name)
     ANNOTATION = "annotation"  # x: name, -> name
+    IMPORT = "import"  # from x import name: only a removal fails on this line
     MENTION = "mention"  # anything else: isinstance, a value, a decorator
 
 

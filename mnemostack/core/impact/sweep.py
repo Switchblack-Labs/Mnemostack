@@ -18,9 +18,9 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, packages_distributions, version
 from pathlib import Path
 
+from mnemostack.core.impact.environment import Environment, canonical, project_environment
 from mnemostack.core.impact.upgrade import UpgradeError, UpgradeReport, check_upgrade
 from mnemostack.core.reach.static import SKIP_DIRS, parse_source
 
@@ -52,6 +52,8 @@ class SweepRow:
             return "breaks"
         if self.report.impacts:
             return "review"
+        if self.report.unwitnessed:
+            return "unverified"  # possible removals nothing could confirm: not safe
         if self.report.deprecations:
             return "deprecations"
         return "safe"
@@ -91,21 +93,19 @@ def latest_version(distribution: str, timeout: float = 10.0) -> str | None:
         return None
 
 
-def candidates(repo: Path) -> list[tuple[str, str, str]]:
+def candidates(repo: Path, env: Environment) -> list[tuple[str, str, str]]:
     """(import name, distribution, installed version) for what the repo imports.
 
-    A package the repo imports but has not installed is skipped: without a
-    current version there is no upgrade to reason about.
+    Versions come from the repo's own environment. A package the repo imports
+    but has not installed there is skipped: without a current version there is
+    no upgrade to reason about.
     """
-    mapping = packages_distributions()
     found: dict[str, tuple[str, str, str]] = {}
     for root in sorted(imported_roots(repo)):
-        for dist in mapping.get(root, []):
-            try:
-                installed = version(dist)
-            except PackageNotFoundError:
-                continue
-            found.setdefault(dist, (root, dist, installed))
+        for dist in env.imports.get(root, []):
+            installed = env.version_of(dist)
+            if installed is not None:
+                found.setdefault(canonical(dist), (root, dist, installed))
     return sorted(found.values())
 
 
@@ -115,8 +115,14 @@ def sweep(repo: Path, progress=None) -> list[SweepRow]:
     Ordered worst first, so the answer to "what can I take today" is the tail
     and the answer to "what will cost me" is the head.
     """
+    env = project_environment(repo)
+    if env is None:
+        raise UpgradeError(
+            f"no .venv or venv found in {repo}: installed versions are read from the "
+            "project's own environment"
+        )
     rows: list[SweepRow] = []
-    todo = candidates(repo)
+    todo = candidates(repo, env)
     for index, (package, distribution, current) in enumerate(todo, start=1):
         if progress:
             progress(index, len(todo), distribution)
@@ -140,11 +146,12 @@ def sweep(repo: Path, progress=None) -> list[SweepRow]:
     rank = {
         "breaks": 0,
         "review": 1,
-        "deprecations": 2,
-        "safe": 3,
-        "current": 4,
-        "unknown": 5,
-        "error": 6,
-        "unchecked": 7,
+        "unverified": 2,
+        "deprecations": 3,
+        "safe": 4,
+        "current": 5,
+        "unknown": 6,
+        "error": 7,
+        "unchecked": 8,
     }
     return sorted(rows, key=lambda r: (rank.get(r.status, 9), r.distribution))

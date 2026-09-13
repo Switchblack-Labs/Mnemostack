@@ -14,15 +14,13 @@ import griffe
 import pytest
 
 from mnemostack.core.impact.api_diff import ApiChange
-from mnemostack.core.impact.propagate import Impact, Severity, impact_report
+from mnemostack.core.impact.propagate import impact_report
 from mnemostack.core.impact.upgrade import (
     UpgradeError,
     changed_symbols,
     check_upgrade,
-    narrow,
     verify,
 )
-from mnemostack.core.reach import RefKind, Site
 from mnemostack.core.reach.static import find_sites
 
 LIB_V1 = """
@@ -115,7 +113,7 @@ def scenario(tmp_path: Path):
 
 def _report(scenario):
     changes, sites = scenario
-    return narrow(impact_report(sites, changes))
+    return impact_report(sites, changes)
 
 
 def _texts(report) -> str:
@@ -123,22 +121,6 @@ def _texts(report) -> str:
 
 
 # --- the filters ------------------------------------------------------------
-
-
-def test_removed_keyword_reported_only_where_it_is_passed(scenario):
-    """The rule that makes the report worth reading.
-
-    `timeout` was removed. One function passes it and breaks; the other passes a
-    different keyword and is fine. Flagging both would make tidying a signature
-    look like a breakage at every call site.
-
-    The previous implementation derived the callee name from a graph node and
-    took the class rather than the method, so it deleted this true positive and
-    kept nothing.
-    """
-    texts = _texts(_report(scenario))
-    assert "timeout=5" in texts, "the call passing the removed keyword must be reported"
-    assert "retries=2" not in texts, "the call not passing it must not be"
 
 
 def test_verify_keeps_a_real_removal(scenario):
@@ -170,16 +152,15 @@ def test_verify_drops_a_removal_the_new_source_contradicts(tmp_path: Path):
     assert verify([invented], new) == [], "a method still in the source is not removed"
 
 
-def test_narrow_only_applies_the_keyword_check_to_calls():
-    """A subclass never passed the argument, so the check must not reach it."""
-    change = ApiChange(
-        fqn="lib.Base",
-        kind="PARAMETER_REMOVED",
-        old="[keyword-only] mode: str = 'fast'",
-        new=None,
-    )
-    sub = Site(file="a.py", line=1, symbol="Base", kind=RefKind.SUBCLASS, text="class X(Base):")
-    assert len(narrow([Impact(site=sub, change=change, severity=Severity.REVIEW)])) == 1
+def test_verify_keeps_a_removal_when_only_another_class_has_the_name(tmp_path: Path):
+    """`def close` anywhere in the file used to count as `A.close` still existing."""
+    v1 = "class A:\n    def close(self): ...\n\n\nclass B:\n    def close(self): ...\n"
+    v2 = "class A:\n    pass\n\n\nclass B:\n    def close(self): ...\n"
+    old = griffe.load("paylib", search_paths=[_write_pkg(tmp_path / "v1", v1)])
+    new = griffe.load("paylib", search_paths=[_write_pkg(tmp_path / "v2", v2)])
+
+    kept = {(c.fqn, c.kind) for c in verify(_changes(old, new), new)}
+    assert ("paylib.A.close", "OBJECT_REMOVED") in kept
 
 
 # --- end to end -------------------------------------------------------------
@@ -199,7 +180,18 @@ def test_changed_symbols_are_relative_to_the_package():
 def test_a_bad_version_is_an_error_not_a_traceback(tmp_path: Path):
     """This is pitched as a CI gate, so every failure must be actionable."""
     with pytest.raises(UpgradeError) as exc:
-        check_upgrade(repo=tmp_path, package="griffe", to_version="999.999.999")
+        check_upgrade(
+            repo=tmp_path, package="griffe", to_version="999.999.999", from_version="1.4.0"
+        )
+    assert "griffe" in str(exc.value)
+
+
+def test_no_installed_version_is_an_error_naming_where_it_looked(tmp_path: Path, monkeypatch):
+    """Never a fallback to the environment mnemostack itself runs in."""
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    with pytest.raises(UpgradeError) as exc:
+        check_upgrade(repo=tmp_path, package="griffe", to_version="1.5.0")
+    assert "--from-version" in str(exc.value)
     assert "griffe" in str(exc.value)
 
 
@@ -271,24 +263,24 @@ def test_deprecated_symbols_reads_the_decorator_not_griffes_flag(tmp_path: Path)
     assert "Model.model_dump" not in found
 
 
-def test_deprecations_are_deduplicated_to_one_public_path():
+def test_deprecations_are_reported_once_per_object_at_its_public_path():
     """griffe reaches a class through every module that imports it.
 
     Unfiltered, three deprecated methods became 105 findings for the same three
-    lines, because BaseModel is reachable as `_internal._fields.BaseModel` and
-    thirty other spellings.
+    lines. Folding them by name instead merged different deprecated methods that
+    happen to share one, so they are folded by what object they are.
     """
-    from mnemostack.core.impact.upgrade import _public_paths
+    from mnemostack.core.impact.upgrade import deprecated_symbols
 
-    msg = "use model_dump"
-    collapsed = _public_paths(
-        {
-            "BaseModel.dict": msg,
-            "_internal._fields.BaseModel.dict": msg,
-            "_internal._model_construction.BaseModel.dict": msg,
-        }
+    inner = (
+        "from typing_extensions import deprecated\n\n\n"
+        "class Model:\n    @deprecated('use model_dump')\n    def dict(self): ...\n\n\n"
+        "class Other:\n    @deprecated('')\n    def dict(self): ...\n"
     )
-    assert collapsed == {"BaseModel.dict": msg}
+    files = {"__init__.py": "from paylib.inner import Model\n", "inner.py": inner}
+    with griffe.temporary_visited_package("paylib", files) as pkg:
+        found = deprecated_symbols(pkg)
+    assert found == {"Model.dict": "use model_dump", "inner.Other.dict": ""}
 
 
 def test_a_bounded_walk_survives_an_import_cycle(tmp_path: Path):

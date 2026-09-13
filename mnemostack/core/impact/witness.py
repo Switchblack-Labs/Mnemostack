@@ -55,13 +55,14 @@ def resolve(path):
             obj = importlib.import_module(".".join(parts[:cut]))
         except Exception:
             continue
+        parent = None
         try:
             for part in parts[cut:]:
-                obj = getattr(obj, part)
+                parent, obj = obj, getattr(obj, part)
         except Exception:
-            return False, None
-        return True, obj
-    return False, None
+            return False, None, None
+        return True, obj, parent
+    return False, None, None
 
 def default(value):
     if value is inspect.Parameter.empty:
@@ -74,7 +75,7 @@ def describe(path):
     leaf = path.rsplit(".", 1)[-1]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        ok, obj = resolve(path)
+        ok, obj, parent = resolve(path)
     # Any category: pydantic 2.9 warns that GenericModel moved as a UserWarning,
     # 2.12 as a DeprecationWarning. What makes it evidence is that resolving this
     # path raised a warning naming it; importing a package can warn about
@@ -91,10 +92,17 @@ def describe(path):
     else:
         kind = "attribute"
     try:
-        signature = [
-            [p.name, p.kind.name, default(p.default)]
-            for p in inspect.signature(obj).parameters.values()
-        ]
+        params = list(inspect.signature(obj).parameters.values())
+        # A plain function looked up on a class is a method, and its first
+        # parameter is the instance a call passes implicitly, whatever it is named.
+        if (
+            params
+            and inspect.isclass(parent)
+            and inspect.isfunction(obj)
+            and not isinstance(inspect.getattr_static(parent, leaf, None), staticmethod)
+        ):
+            params = params[1:]
+        signature = [[p.name, p.kind.name, default(p.default)] for p in params]
     except (TypeError, ValueError):
         signature = None
     return {"resolves": True, "kind": kind, "signature": signature, "warning": warning}
@@ -244,7 +252,8 @@ def witness_signatures(
     If the old version is unknown or the probe cannot run, nothing changes.
 
     With `repo`, a call is bound from its file's parse, so calls split across
-    lines are decided too; without it, only from the site's own line.
+    lines are decided too; without it, only from the site's own line. A call
+    whose binding cannot be decided keeps its finding at REVIEW, not BREAK.
     """
     from mnemostack.core.impact.binding import BIND_DECIDES, still_binds
     from mnemostack.core.reach.static import parse_source
@@ -306,6 +315,12 @@ def witness_signatures(
                 )
                 if fits is True:
                     continue  # the signature changed, and this call still fits it
+                if fits is None and impact.severity is Severity.BREAK:
+                    # The change is real, but the call's arguments are not all in
+                    # the source, `Column(sa_type, *args, **kwargs)`, so nothing
+                    # shows that this call breaks. Asking is honest; BREAK is not.
+                    kept.append(dataclasses.replace(impact, severity=Severity.REVIEW))
+                    continue
             kept.append(impact)  # witnessed: the running code really changed
             continue
         if impact.severity is Severity.BREAK:
