@@ -479,3 +479,21 @@ def test_none_fallback_guards_the_import_but_not_later_uses(tree):
     )
     guarded = {s.line: s.guarded for s in find_sites(repo, "jinja2", {"utils.contextfunction"})}
     assert guarded[2] is True and guarded[5] is False
+
+
+def test_class_membership_comes_from_the_api_not_capitalisation(tree):
+    """sqlalchemy's `array` is a class; spelled lowercase it matched every `.append`."""
+    repo = tree(
+        {
+            "m.py": (
+                "from sqlalchemy.dialects.postgresql import array\n"
+                "\n"
+                "conditions = []\n"
+                "conditions.append(1)\n"
+                "x = array([1])\n"
+                "x.append(2)\n"
+            )
+        }
+    )
+    symbol = "dialects.postgresql.array.array.append"
+    assert {s.line for s in find_sites(repo, "sqlalchemy", {symbol}, members={symbol})} == {6}

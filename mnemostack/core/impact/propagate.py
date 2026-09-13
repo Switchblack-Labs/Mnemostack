@@ -126,17 +126,39 @@ def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
                 # cleanup, not a break. Across twenty repos, two of the three
                 # removals the witness confirmed were exactly this.
                 severity = Severity.REVIEW
-            key = (site.file, site.line, change.fqn)
+            # One entry per place and per change. The filters downstream judge each
+            # change on its own; collapse() reduces a place to its worst change only
+            # after they have run.
+            key = (site.file, site.line, change.fqn, change.kind, change.old)
             current = found.get(key)
             if current is None or _ORDER[severity] < _ORDER[current.severity]:
                 found[key] = Impact(site=site, change=change, severity=severity)
 
-    return sorted(
-        found.values(),
-        key=lambda i: (
-            _ORDER[i.severity],
-            i.site.covered is True,
-            i.site.file,
-            i.site.line,
-        ),
+    return sorted(found.values(), key=_report_order)
+
+
+def _report_order(impact: Impact) -> tuple:
+    return (
+        _ORDER[impact.severity],
+        impact.site.covered is True,
+        impact.site.file,
+        impact.site.line,
     )
+
+
+def collapse(impacts: list[Impact]) -> list[Impact]:
+    """The worst surviving finding per place and symbol, in report order.
+
+    Run last. Reducing a place to one change before the filters had judged each
+    change let pydantic 2's constr keep its `curtail_length` removal as the
+    representative; narrow() then dropped it for not passing curtail_length=,
+    and `constr(regex=...)`, which does break, went with it. Measured on dstack's
+    real pydantic 2 migration.
+    """
+    best: dict[tuple[str, int, str], Impact] = {}
+    for impact in impacts:
+        key = (impact.site.file, impact.site.line, impact.change.fqn)
+        current = best.get(key)
+        if current is None or _ORDER[impact.severity] < _ORDER[current.severity]:
+            best[key] = impact
+    return sorted(best.values(), key=_report_order)

@@ -27,8 +27,9 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from mnemostack.core.impact.propagate import Impact, Severity
+from mnemostack.core.reach import Site
 
-Resolver = Callable[[str, str, list[str]], "dict[str, bool] | None"]
+Resolver = Callable[[str, str, list[str]], "dict[str, bool | str] | None"]
 Prober = Callable[[str, str, list[str]], "dict[str, dict] | None"]
 
 SIGNATURE_KINDS = frozenset(
@@ -70,9 +71,17 @@ def default(value):
     return "<object>"
 
 def describe(path):
-    ok, obj = resolve(path)
+    leaf = path.rsplit(".", 1)[-1]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ok, obj = resolve(path)
+    # Any category: pydantic 2.9 warns that GenericModel moved as a UserWarning,
+    # 2.12 as a DeprecationWarning. What makes it evidence is that resolving this
+    # path raised a warning naming it; importing a package can warn about
+    # unrelated things on its own, and those do not name the leaf.
+    warning = next((str(w.message) for w in caught if leaf in str(w.message)), None)
     if not ok:
-        return {"resolves": False, "kind": None, "signature": None}
+        return {"resolves": False, "kind": None, "signature": None, "warning": None}
     if inspect.isclass(obj):
         kind = "class"
     elif inspect.ismodule(obj):
@@ -88,7 +97,7 @@ def describe(path):
         ]
     except (TypeError, ValueError):
         signature = None
-    return {"resolves": True, "kind": kind, "signature": signature}
+    return {"resolves": True, "kind": kind, "signature": signature, "warning": warning}
 
 print(json.dumps({p: describe(p) for p in json.loads(sys.argv[1])}))
 """
@@ -144,12 +153,19 @@ def uv_probe(distribution: str, version: str, paths: list[str]) -> dict[str, dic
     return {str(path): info for path, info in answer.items() if isinstance(info, dict)}
 
 
-def uv_resolver(distribution: str, version: str, paths: list[str]) -> dict[str, bool] | None:
-    """Which dotted paths resolve with `distribution==version`, or None if unknown."""
+def uv_resolver(distribution: str, version: str, paths: list[str]) -> dict[str, bool | str] | None:
+    """Which dotted paths resolve with `distribution==version`, or None if unknown.
+
+    A path that resolves while warning that it is deprecated maps to the warning
+    instead of True.
+    """
     described = uv_probe(distribution, version, paths)
     if described is None:
         return None
-    return {path: bool(info.get("resolves")) for path, info in described.items()}
+    return {
+        path: (info.get("warning") or True) if info.get("resolves") else False
+        for path, info in described.items()
+    }
 
 
 def witness_removals(
@@ -157,7 +173,7 @@ def witness_removals(
     distribution: str,
     version: str,
     resolve: Resolver = uv_resolver,
-) -> tuple[list[Impact], int]:
+) -> tuple[list[Impact], int, list[tuple[str, str, Site]]]:
     """Keep a removal only if the path the code uses really fails to resolve.
 
     Returns the surviving impacts, and how many removals were dropped because
@@ -171,19 +187,26 @@ def witness_removals(
 
     If the witness cannot run at all, nothing is dropped. Hiding every finding
     because uv is missing would be worse than showing unverified ones.
+
+    A removal whose path still resolves but warns that it is deprecated comes back
+    third, as (path, warning, site). pydantic 2 keeps `pydantic.generics
+    .GenericModel` importable behind a warning: not a break, but exactly the
+    migration a maintainer has to do. Measured on dstack's and distiller's real
+    pydantic 2 migrations, both paths were changed and neither was reported.
     """
     impacts = list(impacts)
     removals = [i for i in impacts if i.change.kind == "OBJECT_REMOVED"]
     if not removals:
-        return impacts, 0
+        return impacts, 0, []
 
     paths = sorted({i.site.via for i in removals if i.site.via})
     verdict = resolve(distribution, version, paths)
     if verdict is None:
-        return impacts, 0
+        return impacts, 0, []
 
     kept: list[Impact] = []
     unwitnessed = 0
+    warned: list[tuple[str, str, Site]] = []
     for impact in impacts:
         if impact.change.kind != "OBJECT_REMOVED":
             kept.append(impact)
@@ -191,9 +214,11 @@ def witness_removals(
         result = verdict.get(impact.site.via) if impact.site.via else None
         if result is False:
             kept.append(impact)  # witnessed: the path this code uses is gone
+        elif isinstance(result, str):
+            warned.append((impact.site.via, result, impact.site))
         elif result is None:
             unwitnessed += 1
-    return kept, unwitnessed
+    return kept, unwitnessed, warned
 
 
 def witness_signatures(

@@ -21,7 +21,7 @@ import griffe
 import platformdirs
 
 from mnemostack.core.impact.api_diff import ApiChange
-from mnemostack.core.impact.propagate import Impact, impact_report
+from mnemostack.core.impact.propagate import Impact, collapse, impact_report
 from mnemostack.core.reach import RefKind, Site
 from mnemostack.core.reach.static import find_sites
 
@@ -243,6 +243,21 @@ def changed_symbols(changes: list[ApiChange], package: str) -> set[str]:
     return out
 
 
+def class_members(root, symbols: set[str]) -> set[str]:
+    """The symbols whose owner is a class in `root`, read from the API, not the spelling."""
+    found = set()
+    for symbol in symbols:
+        owner = symbol.rpartition(".")[0]
+        if not owner:
+            continue
+        try:
+            if root[owner].is_class:
+                found.add(symbol)
+        except Exception:  # an unresolvable alias raises on access  # noqa: BLE001
+            continue
+    return found
+
+
 def check_upgrade(
     repo: Path,
     package: str,
@@ -275,12 +290,18 @@ def check_upgrade(
     real = verify(raw, target)
 
     if sites is None:
-        sites = find_sites(repo, package, changed_symbols(real, package))
+        symbols = changed_symbols(real, package)
+        members = class_members(current, symbols) | class_members(target, symbols)
+        sites = find_sites(repo, package, symbols, members=members)
 
     # Deprecations are looked for separately: they are not breaking changes, so
     # griffe never reports them, and they reach code the diff does not touch.
     deprecated = _public_paths(deprecated_symbols(target))
-    dep_sites = find_sites(repo, package, set(deprecated)) if deprecated else []
+    dep_sites = (
+        find_sites(repo, package, set(deprecated), members=class_members(target, set(deprecated)))
+        if deprecated
+        else []
+    )
     by_symbol: dict[str, list[Site]] = {}
     for site in dep_sites:
         by_symbol.setdefault(site.symbol, []).append(site)
@@ -299,7 +320,23 @@ def check_upgrade(
     # A removal is only reported if the import the code actually uses fails in
     # the target version. Measured across twenty repos we did not write, griffe's
     # removals were mostly re-exports that still import fine.
-    impacts, unwitnessed = witness_removals(narrow(impact_report(sites, real)), dist, to_version)
+    impacts, unwitnessed, warned = witness_removals(
+        narrow(impact_report(sites, real)), dist, to_version
+    )
+
+    # A removal that still imports behind a deprecation warning is a migration
+    # the decorator scan cannot see: pydantic 2 warns from a module __getattr__.
+    moved: dict[str, tuple[str, dict[tuple[str, int], Site]]] = {}
+    for via, message, site in warned:
+        moved.setdefault(via, (message, {}))[1].setdefault((site.file, site.line), site)
+    deprecations += [
+        Deprecation(
+            symbol=via.removeprefix(f"{package.split('.')[0]}."),
+            message=message.splitlines()[0][:160],
+            sites=list(found.values()),
+        )
+        for via, (message, found) in sorted(moved.items())
+    ]
 
     # Signature and kind changes are compared on the running code in both
     # versions. The ones that survived removal witnessing were griffe misreports
@@ -308,7 +345,7 @@ def check_upgrade(
         old_version = from_version or installed_version(dist)
     except PackageNotFoundError:
         old_version = None
-    impacts = witness_signatures(impacts, dist, old_version, to_version, repo=repo)
+    impacts = collapse(witness_signatures(impacts, dist, old_version, to_version, repo=repo))
 
     return UpgradeReport(
         package=package,
