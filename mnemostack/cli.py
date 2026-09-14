@@ -1,7 +1,6 @@
 """Command line entry point.
 
-Bare `mnemostack` still starts the MCP server, because that is how every
-configured client already invokes it. Subcommands are additive.
+`mnemostack upgrade-check` and `mnemostack sweep`; bare `mnemostack` prints usage.
 """
 
 from __future__ import annotations
@@ -45,7 +44,8 @@ def finding_groups(impacts) -> dict[tuple, tuple[str, list]]:
     """(severity, kind, name, places) -> (label, one site per place).
 
     griffe reaches one symbol through every module that re-exports it, so
-    `FastMCP` arrives as both `mcp.server.FastMCP` and `mcp.server.fastmcp.FastMCP`
+    `ValidationError` arrives as both `pydantic.ValidationError` and
+    `pydantic.error_wrappers.ValidationError`
     at the same lines; those fold into one finding under the shortest path.
     Different symbols that share a name, `Session.close` and `Connection.close`,
     reach different lines and stay apart. Keying on the name alone merged them.
@@ -230,9 +230,13 @@ def main() -> None:
         if argv[0] == "sweep":
             raise SystemExit(sweep_cmd(argv[1:]))
 
-    from mnemostack.mcp.server import run
-
-    run()
+    print(
+        "usage: mnemostack upgrade-check <package> <to-version> [options]\n"
+        "       mnemostack sweep [options]\n\n"
+        "Run a command with --help for its options.",
+        file=sys.stderr,
+    )
+    raise SystemExit(0 if argv[:1] in (["-h"], ["--help"]) else 2)
 
 
 if __name__ == "__main__":
