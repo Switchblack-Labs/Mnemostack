@@ -99,8 +99,13 @@ or the check itself failed. Packages imported but not installed are skipped.
   imports and anything built at runtime are not followed.
 - **It sees API shape, not behaviour.** A function that keeps its signature but
   changes what it does is invisible here. Tests catch those.
-- **No accuracy figures are claimed.** There is no reproducible benchmark in
-  this repository yet.
+- **Its accuracy is measured on a small, pinned sample.** Across 20 widely used
+  repositories checked against 10 major-version upgrades, it reports 2 BREAK
+  findings, and both are real. On two real pydantic 1 to 2 migration commits,
+  36% and 61% of the changed lines that touch pydantic carry a breaking
+  finding, and 96% and 78% counting deprecations. On a SQLAlchemy 2.0 migration
+  that is mostly a typing rewrite, 3% do. [`bench/`](bench/README.md) reruns all
+  of it.
 
 ## Install
 

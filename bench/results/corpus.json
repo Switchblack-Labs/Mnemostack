@@ -1,0 +1,1727 @@
+[
+ {
+  "repo": "fastapi",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "EmailStr",
+    "places": 1,
+    "sample": [
+     "fastapi/openapi/models.py:23 | class EmailStr(str):  # type: ignore[no-redef]"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "default",
+    "places": 2,
+    "sample": [
+     "fastapi/params.py:134 | return f\"{self.__class__.__name__}({self.default})\"",
+     "fastapi/params.py:578 | return f\"{self.__class__.__name__}({self.default})\""
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_REMOVED",
+    "symbol": "dataclass",
+    "places": 3,
+    "sample": [
+     "docs_src/dataclasses_/tutorial003_py310.py:7 | @dataclass",
+     "docs_src/dataclasses_/tutorial003_py310.py:13 | @dataclass",
+     "tests/test_validate_response_dataclass.py:10 | @dataclass"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "create_model",
+    "places": 3,
+    "sample": [
+     "fastapi/_compat/v2.py:391 | BodyModel: type[BaseModel] = create_model(model_name, **field_params)  # type: ignore[call-overload]  # ty: ignore[no-matching-overload]",
+     "fastapi/exceptions.py:157 | RequestErrorModel: type[BaseModel] = create_model(\"Request\")",
+     "fastapi/exceptions.py:158 | WebSocketErrorModel: type[BaseModel] = create_model(\"WebSocket\")"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "HttpUrl",
+    "places": 7,
+    "sample": [
+     "docs_src/body_nested_models/tutorial005_py310.py:8 | url: HttpUrl",
+     "docs_src/body_nested_models/tutorial006_py310.py:8 | url: HttpUrl",
+     "docs_src/body_nested_models/tutorial007_py310.py:8 | url: HttpUrl"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "Field",
+    "places": 116,
+    "sample": [
+     "docs_src/body_fields/tutorial001_an_py310.py:11 | description: str | None = Field(",
+     "docs_src/body_fields/tutorial001_an_py310.py:14 | price: float = Field(gt=0, description=\"The price must be greater than zero\")",
+     "docs_src/body_fields/tutorial001_py310.py:9 | description: str | None = Field("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 396,
+    "sample": [
+     "docs_src/additional_responses/tutorial001_py310.py:6 | class Item(BaseModel):",
+     "docs_src/additional_responses/tutorial001_py310.py:11 | class Message(BaseModel):",
+     "docs_src/additional_responses/tutorial002_py310.py:6 | class Item(BaseModel):"
+    ]
+   }
+  ],
+  "deprecations": [
+   {
+    "symbol": "BaseModel.validate",
+    "places": 1,
+    "message": "The `validate` method is deprecated; use `model_validate` instead."
+   },
+   {
+    "symbol": "color.Color",
+    "places": 4,
+    "message": "The `Color` class is deprecated, use `pydantic_extra_types` instead. See https://docs.pydantic.dev/l"
+   }
+  ],
+  "unverified_removals": 0,
+  "secs": 4.2
+ },
+ {
+  "repo": "fastapi",
+  "package": "sqlalchemy",
+  "from": "1.4.52",
+  "to": "2.0.35",
+  "changes": 3110,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 14.6
+ },
+ {
+  "repo": "fastapi",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Template",
+    "places": 2,
+    "sample": [
+     "scripts/docs.py:363 | template = Template(index_sponsors_template)",
+     "scripts/docs.py:543 | template = Template(banner_sponsors_template)"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.3
+ },
+ {
+  "repo": "fastapi",
+  "package": "httpx",
+  "from": "0.23.3",
+  "to": "0.27.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.9
+ },
+ {
+  "repo": "fastapi",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "typer",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 1,
+    "sample": [
+     "scripts/deploy_docs_status.py:21 | class LinkData(BaseModel):"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "sqlmodel",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "UUID4",
+    "places": 1,
+    "sample": [
+     "tests/test_annotated_uuid.py:11 | id: UUID4 | None = Field(default_factory=uuid.uuid4, primary_key=True)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "default",
+    "places": 2,
+    "sample": [
+     "sqlmodel/main.py:825 | elif field_info.default is not Undefined:",
+     "sqlmodel/main.py:826 | sa_default = field_info.default"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 6,
+    "sample": [
+     "scripts/deploy_docs_status.py:21 | class LinkData(BaseModel):",
+     "scripts/generate_select.py:18 | class Arg(BaseModel):",
+     "sqlmodel/main.py:845 | class SQLModel(BaseModel, metaclass=SQLModelMetaclass, registry=default_registry):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "Field",
+    "places": 8,
+    "sample": [
+     "tests/test_aliases.py:16 | full_name: str = Field(alias=\"fullName\")",
+     "tests/test_aliases.py:101 | first_name: str = Field(validation_alias=\"firstName\", serialization_alias=\"f_name\")",
+     "tests/test_aliases.py:126 | f: str = Field(schema_extra={\"validation_alias\": \"f_alias\"})"
+    ]
+   }
+  ],
+  "deprecations": [
+   {
+    "symbol": "BaseModel.validate",
+    "places": 1,
+    "message": "The `validate` method is deprecated; use `model_validate` instead."
+   },
+   {
+    "symbol": "error_wrappers.ValidationError",
+    "places": 2,
+    "message": "`pydantic.error_wrappers:ValidationError` has been moved to `pydantic:ValidationError`."
+   }
+  ],
+  "unverified_removals": 0,
+  "secs": 1.8
+ },
+ {
+  "repo": "sqlmodel",
+  "package": "sqlalchemy",
+  "from": "1.4.52",
+  "to": "2.0.35",
+  "changes": 3110,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_REMOVED",
+    "symbol": "__init__",
+    "places": 1,
+    "sample": [
+     "sqlmodel/main.py:837 | return Column(sa_type, *args, **kwargs)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Executable",
+    "places": 1,
+    "sample": [
+     "sqlmodel/sql/base.py:8 | class Executable(_Executable, Generic[_T]):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "__init__",
+    "places": 2,
+    "sample": [
+     "sqlmodel/main.py:815 | args.append(ForeignKey(foreign_key, ondelete=ondelete_value))",
+     "tests/test_field_sa_args_kwargs.py:14 | sa_column_args=[ForeignKey(\"team.id\")],"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "registry",
+    "places": 2,
+    "sample": [
+     "sqlmodel/main.py:840 | default_registry = registry()",
+     "sqlmodel/main.py:845 | class SQLModel(BaseModel, metaclass=SQLModelMetaclass, registry=default_registry):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 2,
+    "sample": [
+     "tests/test_main.py:103 | sa_relationship=RelationshipProperty(\"Hero\", back_populates=\"team\")",
+     "tests/test_main.py:111 | sa_relationship=RelationshipProperty(\"Team\", back_populates=\"heroes\")"
+    ]
+   }
+  ],
+  "deprecations": [
+   {
+    "symbol": "create_engine",
+    "places": 1,
+    "message": ""
+   }
+  ],
+  "unverified_removals": 0,
+  "secs": 30.7
+ },
+ {
+  "repo": "sqlmodel",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Template",
+    "places": 2,
+    "sample": [
+     "scripts/docs.py:56 | template = Template(index_sponsors_template)",
+     "scripts/generate_select.py:46 | template: Template = Template(template_path.read_text())"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.3
+ },
+ {
+  "repo": "sqlmodel",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.4
+ },
+ {
+  "repo": "httpie",
+  "package": "requests",
+  "from": "2.25.1",
+  "to": "2.32.3",
+  "changes": 14,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseAdapter",
+    "places": 1,
+    "sample": [
+     "tests/test_transport_plugin.py:15 | class FakeAdapter(BaseAdapter):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "AuthBase",
+    "places": 2,
+    "sample": [
+     "httpie/plugins/builtin.py:37 | class HTTPBearerAuth(requests.auth.AuthBase):",
+     "httpie/utils.py:124 | class ExplicitNullAuth(requests.auth.AuthBase):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Response",
+    "places": 2,
+    "sample": [
+     "tests/test_downloads.py:18 | class Response(requests.Response):",
+     "tests/test_transport_plugin.py:17 | response = Response()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "httpie",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Template",
+    "places": 2,
+    "sample": [
+     "docs/contributors/generate.py:35 | template = Template(source=TPL_FILE.read_text(encoding='utf-8'))",
+     "docs/installation/generate.py:29 | template = Template(source=TPL_FILE.read_text(encoding='utf-8'))"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "httpie",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "datasette",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 1,
+    "sample": [
+     "datasette/views/table_create_alter.py:453 | class _StrictPydanticModel(BaseModel):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "Field",
+    "places": 4,
+    "sample": [
+     "datasette/views/table_create_alter.py:656 | columns: list[str] = Field(min_length=1)",
+     "datasette/views/table_create_alter.py:660 | columns: list[str] = Field(min_length=1)",
+     "datasette/views/table_create_alter.py:758 | Field(discriminator=\"op\"),"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 2.9
+ },
+ {
+  "repo": "datasette",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "HelpFormatter",
+    "places": 1,
+    "sample": [
+     "datasette/cli.py:539 | formatter = formatting.HelpFormatter()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 1,
+    "sample": [
+     "datasette/cli.py:918 | click.echo(click.style(msg, bold=True, fg=\"yellow\"), err=True)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "ParamType",
+    "places": 2,
+    "sample": [
+     "datasette/utils/__init__.py:1104 | class StaticMount(click.ParamType):",
+     "datasette/utils/__init__.py:1123 | class LoadExtension(click.ParamType):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 55,
+    "sample": [
+     "tests/test_auth.py:359 | runner = CliRunner()",
+     "tests/test_cli.py:28 | runner = CliRunner()",
+     "tests/test_cli.py:51 | runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 55,
+    "sample": [
+     "tests/test_auth.py:359 | runner = CliRunner()",
+     "tests/test_cli.py:28 | runner = CliRunner()",
+     "tests/test_cli.py:51 | runner = CliRunner()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "datasette",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 1,
+    "sample": [
+     "datasette/app.py:622 | environment = Environment("
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.1
+ },
+ {
+  "repo": "datasette",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.0
+ },
+ {
+  "repo": "pip-tools",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 1,
+    "sample": [
+     "piptools/utils.py:80 | return click.style(text, fg=\"green\")"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 2,
+    "sample": [
+     "tests/conftest.py:254 | cli_runner = CliRunner(mix_stderr=False)",
+     "tests/conftest.py:256 | cli_runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 2,
+    "sample": [
+     "tests/conftest.py:254 | cli_runner = CliRunner(mix_stderr=False)",
+     "tests/conftest.py:256 | cli_runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Context",
+    "places": 6,
+    "sample": [
+     "tests/test_utils.py:691 | ctx = Context(compile_cli)",
+     "tests/test_utils.py:719 | ctx = Context(compile_cli)",
+     "tests/test_utils.py:731 | ctx = Context(compile_cli)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "name",
+    "places": 7,
+    "sample": [
+     "piptools/scripts/compile.py:269 | if output_file.name != \"-\" and output_file.name in src_files:",
+     "piptools/scripts/compile.py:271 | f\"input and output filenames must not be matched: {output_file.name}\"",
+     "piptools/scripts/compile.py:338 | output_file_exists = os.path.exists(output_file.name)"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "black",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 1,
+    "sample": [
+     "src/black/output.py:118 | return style(message, **styles)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Context",
+    "places": 1,
+    "sample": [
+     "tests/test_black.py:98 | class FakeContext(click.Context):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 4,
+    "sample": [
+     "tests/test_blackd.py:35 | result = CliRunner().invoke(blackd.main, [])",
+     "tests/test_ipynb.py:38 | runner = CliRunner()",
+     "tests/test_no_ipynb.py:11 | runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 4,
+    "sample": [
+     "tests/test_blackd.py:35 | result = CliRunner().invoke(blackd.main, [])",
+     "tests/test_ipynb.py:38 | runner = CliRunner()",
+     "tests/test_no_ipynb.py:11 | runner = CliRunner()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 2.0
+ },
+ {
+  "repo": "black",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.8
+ },
+ {
+  "repo": "cookiecutter",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 1,
+    "sample": [
+     "tests/test_cli.py:21 | runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 4,
+    "sample": [
+     "tests/test_cli.py:21 | runner = CliRunner()",
+     "tests/test_prompt.py:169 | runner = click.testing.CliRunner()",
+     "tests/test_read_user_dict.py:105 | runner = click.testing.CliRunner()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.6
+ },
+ {
+  "repo": "cookiecutter",
+  "package": "requests",
+  "from": "2.25.1",
+  "to": "2.32.3",
+  "changes": 14,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.2
+ },
+ {
+  "repo": "cookiecutter",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 3,
+    "sample": [
+     "cookiecutter/environment.py:59 | class StrictEnvironment(ExtensionLoaderMixin, Environment):",
+     "tests/test_generate_files.py:450 | environment=Environment(autoescape=True),",
+     "tests/test_time_extension.py:11 | return Environment(extensions=['cookiecutter.extensions.TimeExtension'])  # noqa: S701"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Extension",
+    "places": 8,
+    "sample": [
+     "cookiecutter/extensions.py:24 | class JsonifyExtension(Extension):",
+     "cookiecutter/extensions.py:37 | class RandomStringExtension(Extension):",
+     "cookiecutter/extensions.py:54 | class SlugifyExtension(Extension):"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.4
+ },
+ {
+  "repo": "cookiecutter",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "mkdocs",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 1,
+    "sample": [
+     "mkdocs/__main__.py:82 | prefix = click.style(prefix, fg=self.colors[record.levelname])"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 1,
+    "sample": [
+     "mkdocs/tests/cli_tests.py:15 | self.runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 1,
+    "sample": [
+     "mkdocs/tests/cli_tests.py:15 | self.runner = CliRunner()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.6
+ },
+ {
+  "repo": "mkdocs",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Template",
+    "places": 1,
+    "sample": [
+     "mkdocs/commands/build.py:134 | template = jinja2.Template(file.content_string)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 1,
+    "sample": [
+     "mkdocs/theme.py:162 | env = jinja2.Environment(loader=loader, auto_reload=False)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_REMOVED",
+    "symbol": "contextfilter",
+    "places": 4,
+    "sample": [
+     "mkdocs/utils/templates.py:11 | from jinja2 import pass_context as contextfilter  # type: ignore",
+     "mkdocs/utils/templates.py:13 | from jinja2 import contextfilter  # type: ignore",
+     "mkdocs/utils/templates.py:37 | @contextfilter"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.4
+ },
+ {
+  "repo": "mkdocs",
+  "package": "markdown",
+  "from": "3.3.7",
+  "to": "3.7",
+  "changes": 74,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "mkdocs",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "flask",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_ADDED_REQUIRED",
+    "symbol": "invoke",
+    "places": 1,
+    "sample": [
+     "src/flask/cli.py:400 | return ctx.invoke(f, *args, **kwargs)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "ParamType",
+    "places": 1,
+    "sample": [
+     "src/flask/cli.py:780 | class CertParamType(click.ParamType):  # type: ignore[type-arg]"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "__init__",
+    "places": 4,
+    "sample": [
+     "src/flask/cli.py:283 | version_option = click.Option(",
+     "src/flask/cli.py:453 | _app_option = click.Option(",
+     "src/flask/cli.py:485 | _debug_option = click.Option("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Option",
+    "places": 4,
+    "sample": [
+     "src/flask/cli.py:283 | version_option = click.Option(",
+     "src/flask/cli.py:453 | _app_option = click.Option(",
+     "src/flask/cli.py:485 | _debug_option = click.Option("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 8,
+    "sample": [
+     "src/flask/testing.py:265 | class FlaskCliRunner(CliRunner):",
+     "tests/test_cli.py:37 | return CliRunner()",
+     "tests/test_cli.py:401 | runner = CliRunner(mix_stderr=False)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 11,
+    "sample": [
+     "src/flask/cli.py:283 | version_option = click.Option(",
+     "src/flask/cli.py:453 | _app_option = click.Option(",
+     "src/flask/cli.py:485 | _debug_option = click.Option("
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 2,
+  "secs": 0.8
+ },
+ {
+  "repo": "flask",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 1,
+    "sample": [
+     "src/flask/templating.py:36 | class Environment(BaseEnvironment):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseLoader",
+    "places": 1,
+    "sample": [
+     "src/flask/templating.py:49 | class DispatchingJinjaLoader(BaseLoader):"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.2
+ },
+ {
+  "repo": "flask",
+  "package": "werkzeug",
+  "from": "2.0.3",
+  "to": "3.0.4",
+  "changes": 244,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "generate_password_hash",
+    "places": 1,
+    "sample": [
+     "examples/tutorial/flaskr/auth.py:68 | (username, generate_password_hash(password)),"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.5
+ },
+ {
+  "repo": "pre-commit",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "apprise",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 2,
+    "sample": [
+     "apprise/cli.py:965 | click.style(",
+     "apprise/cli.py:1229 | click.style("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 6,
+    "sample": [
+     "tests/test_apprise_cli.py:95 | runner = CliRunner()",
+     "tests/test_apprise_cli.py:935 | runner = CliRunner()",
+     "tests/test_apprise_cli.py:1105 | runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 6,
+    "sample": [
+     "tests/test_apprise_cli.py:95 | runner = CliRunner()",
+     "tests/test_apprise_cli.py:935 | runner = CliRunner()",
+     "tests/test_apprise_cli.py:1105 | runner = CliRunner()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.4
+ },
+ {
+  "repo": "apprise",
+  "package": "requests",
+  "from": "2.25.1",
+  "to": "2.32.3",
+  "changes": 14,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Response",
+    "places": 1,
+    "sample": [
+     "tests/test_config_base.py:71 | resp = requests.Response()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 4.2
+ },
+ {
+  "repo": "apprise",
+  "package": "markdown",
+  "from": "3.3.7",
+  "to": "3.7",
+  "changes": 74,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 2.6
+ },
+ {
+  "repo": "apprise",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "__version__",
+    "places": 1,
+    "sample": [
+     "tests/test_config_base.py:1652 | int(yaml.__version__.split(\".\")[0]) <= 3,"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "instructor",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "break",
+    "kind": "OBJECT_REMOVED",
+    "symbol": "parse_file_as",
+    "places": 4,
+    "sample": [
+     "examples/gpt-engineer/refactor.py:4 | from pydantic import Field, parse_file_as",
+     "examples/gpt-engineer/refactor.py:4 | from pydantic import Field, parse_file_as",
+     "examples/gpt-engineer/refactor.py:97 | program = parse_file_as(path=\"program.json\", type_=Program)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_REMOVED",
+    "symbol": "create_model",
+    "places": 1,
+    "sample": [
+     "instructor/v2/core/response_model.py:16 | _create_dynamic_model = cast(Callable[..., type[BaseModel]], create_model)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "validator",
+    "places": 2,
+    "sample": [
+     "examples/sqlmodel/run.py:101 | @validator(\"name\")",
+     "examples/sqlmodel/test_basic.py:59 | @validator(\"name\")"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "PrivateAttr",
+    "places": 2,
+    "sample": [
+     "tests/coverage/test_anthropic_handlers_coverage.py:43 | _raw_response: Any = PrivateAttr(default=None)",
+     "tests/coverage/test_core_client_coverage.py:27 | _raw_response: Any = PrivateAttr(default=None)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "create_model",
+    "places": 21,
+    "sample": [
+     "instructor/v2/core/function_calls.py:609 | create_model(",
+     "instructor/v2/dsl/iterable.py:288 | new_cls = create_model(",
+     "instructor/v2/dsl/maybe.py:56 | return create_model("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "Field",
+    "places": 263,
+    "sample": [
+     "examples/auto-ticketer/run.py:22 | id: int = Field(..., description=\"Unique identifier for the subtask\")",
+     "examples/auto-ticketer/run.py:23 | name: str = Field(..., description=\"Informative title of the subtask\")",
+     "examples/auto-ticketer/run.py:31 | id: int = Field(..., description=\"Unique identifier for the ticket\")"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 587,
+    "sample": [
+     "examples/anthropic-web-tool/run.py:13 | class Citation(BaseModel):",
+     "examples/anthropic-web-tool/run.py:18 | class Response(BaseModel):",
+     "examples/anthropic/run.py:9 | class Properties(BaseModel):"
+    ]
+   }
+  ],
+  "deprecations": [
+   {
+    "symbol": "validator",
+    "places": 4,
+    "message": "Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@"
+   }
+  ],
+  "unverified_removals": 0,
+  "secs": 11.2
+ },
+ {
+  "repo": "instructor",
+  "package": "requests",
+  "from": "2.25.1",
+  "to": "2.32.3",
+  "changes": 14,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Response",
+    "places": 1,
+    "sample": [
+     "tests/coverage/test_core_multimodal_coverage.py:49 | result = requests.Response()"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "instructor",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Template",
+    "places": 3,
+    "sample": [
+     "examples/codegen-from-schema/create_fastapi_app.py:78 | app_template = Template(template_str)",
+     "examples/codegen-from-schema/run.py:30 | PROMPT_TEMPLATE = Template(",
+     "instructor/v2/core/errors.py:76 | template = Template("
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "instructor",
+  "package": "httpx",
+  "from": "0.23.3",
+  "to": "0.27.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "instructor",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "pydantic-settings",
+  "package": "pydantic",
+  "from": "1.10.13",
+  "to": "2.9.2",
+  "changes": 711,
+  "groups": [
+   {
+    "severity": "break",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "PostgresDsn",
+    "places": 3,
+    "sample": [
+     "tests/test_settings.py:4171 | assert s.bar.get_secret_value() == PostgresDsn('postgres://user:password@localhost/dbname')",
+     "tests/test_settings.py:4196 | assert s.bar.get_secret_value() == PostgresDsn('postgres://user:password@localhost/dbname')",
+     "tests/test_settings.py:4198 | assert s.baz.get_secret_value() == PostgresDsn('postgres://user:password@localhost/other')"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "AnyHttpUrl",
+    "places": 1,
+    "sample": [
+     "tests/test_precedence_and_merging.py:18 | abc: AnyHttpUrl = Field(validation_alias='my_abc')"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "HttpUrl",
+    "places": 1,
+    "sample": [
+     "tests/test_settings.py:2340 | foo: HttpUrl"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "DirectoryPath",
+    "places": 1,
+    "sample": [
+     "tests/test_source_cli.py:2975 | (DirectoryPath, 'Path'),"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "PostgresDsn",
+    "places": 3,
+    "sample": [
+     "tests/test_settings.py:4164 | bar: Secret[PostgresDsn]",
+     "tests/test_settings.py:4187 | bar: MySecret[PostgresDsn]",
+     "tests/test_settings.py:4188 | baz: MySecret[PostgresDsn] | None = None"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "dataclass",
+    "places": 3,
+    "sample": [
+     "tests/test_source_cli.py:4177 | @pydantic_dataclasses.dataclass(config=ConfigDict(json_schema_extra=add_description))",
+     "tests/test_source_cli.py:4186 | @pydantic_dataclasses.dataclass(config=ConfigDict(json_schema_extra={'description': 'DC description.'}))",
+     "tests/test_source_cli.py:4239 | @pydantic_dataclasses.dataclass(config=ConfigDict(json_schema_extra=add_title))"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "PrivateAttr",
+    "places": 4,
+    "sample": [
+     "pydantic_settings/sources/providers/cli.py:154 | _alias_names: tuple[str, ...] = PrivateAttr(())",
+     "pydantic_settings/sources/providers/cli.py:155 | _alias_paths: dict[str, int | None] = PrivateAttr({})",
+     "pydantic_settings/sources/providers/cli.py:156 | _is_alias_path_only: bool = PrivateAttr(False)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "StrictBool",
+    "places": 4,
+    "sample": [
+     "tests/test_settings.py:4340 | my_bool: StrictBool | None = None",
+     "tests/test_settings.py:4347 | my_bool: StrictBool | None = None",
+     "tests/test_settings.py:4353 | flag: StrictBool | None = None"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "OBJECT_CHANGED_KIND",
+    "symbol": "StrictInt",
+    "places": 4,
+    "sample": [
+     "tests/test_settings.py:4363 | my_int: StrictInt | None = None",
+     "tests/test_settings.py:4406 | my_int: StrictInt | None = None",
+     "tests/test_settings.py:4417 | my_json: Json[StrictInt] | None = None"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_REMOVED",
+    "symbol": "dataclass",
+    "places": 8,
+    "sample": [
+     "tests/test_settings.py:755 | @pytest.mark.parametrize('dataclass_decorator', (pydantic_dataclasses.dataclass, dataclasses.dataclass))",
+     "tests/test_settings.py:840 | @pydantic_dataclasses.dataclass",
+     "tests/test_settings.py:1453 | @pydantic_dataclasses.dataclass"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "default",
+    "places": 13,
+    "sample": [
+     "pydantic_settings/sources/base.py:292 | if is_dataclass(type(field_info.default)):",
+     "pydantic_settings/sources/base.py:293 | self.defaults[preferred_alias] = asdict(field_info.default)",
+     "pydantic_settings/sources/base.py:294 | elif is_model_class(type(field_info.default)):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "Field",
+    "places": 180,
+    "sample": [
+     "pydantic_settings/sources/providers/cli.py:307 | CliUnknownArgs = Annotated[list[str], Field(default=[]), _CliUnknownArgs, NoDecode]",
+     "tests/test_precedence_and_merging.py:18 | abc: AnyHttpUrl = Field(validation_alias='my_abc')",
+     "tests/test_precedence_and_merging.py:137 | interval: int = Field(60, ge=60)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "BaseModel",
+    "places": 183,
+    "sample": [
+     "pydantic_settings/main.py:145 | class BaseSettings(BaseModel):",
+     "pydantic_settings/sources/providers/cli.py:91 | class CliMutuallyExclusiveGroup(BaseModel):",
+     "pydantic_settings/sources/providers/cli.py:140 | class _CliArg(BaseModel):"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 4.6
+ },
+ {
+  "repo": "pydantic-settings",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.3
+ },
+ {
+  "repo": "starlette",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "OBJECT_REMOVED",
+    "symbol": "contextfunction",
+    "places": 1,
+    "sample": [
+     "starlette/templating.py:26 | pass_context = jinja2.contextfunction  # type: ignore[attr-defined]"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 3,
+    "sample": [
+     "starlette/templating.py:95 | self.env = jinja2.Environment(loader=loader, autoescape=jinja2.select_autoescape())",
+     "tests/test_templates.py:145 | Jinja2Templates(directory=\"dir\", env=jinja2.Environment())  # type: ignore[call-overload]",
+     "tests/test_templates.py:166 | env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(tmpdir)))"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.9
+ },
+ {
+  "repo": "starlette",
+  "package": "httpx",
+  "from": "0.23.3",
+  "to": "0.27.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.4
+ },
+ {
+  "repo": "starlette",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.9
+ },
+ {
+  "repo": "click",
+  "package": "click",
+  "from": "7.1.2",
+  "to": "8.1.7",
+  "changes": 117,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "PARAMETER_REMOVED",
+    "symbol": "help_option",
+    "places": 1,
+    "sample": [
+     "tests/test_options.py:1216 | @click.help_option(*name_specs, **option_attrs)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "is_bool_flag",
+    "places": 1,
+    "sample": [
+     "tests/test_options.py:1838 | assert option.is_bool_flag is expect_is_bool_flag"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_ADDED_REQUIRED",
+    "symbol": "forward",
+    "places": 2,
+    "sample": [
+     "tests/test_commands.py:36 | ctx.forward(test)",
+     "tests/test_commands.py:59 | ctx.forward(first)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "default",
+    "places": 2,
+    "sample": [
+     "tests/test_options.py:2577 | assert opt.default is expected_default_attr",
+     "tests/test_utils/test_sentinel.py:93 | assert option.default is UNSET"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "pause",
+    "places": 4,
+    "sample": [
+     "examples/termui/termui.py:141 | click.pause()",
+     "tests/test_testing.py:252 | click.pause()",
+     "tests/test_utils/test_echo.py:164 | click.pause(\"Pause to stdout\")"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "write_usage",
+    "places": 4,
+    "sample": [
+     "tests/test_formatting.py:513 | formatter.write_usage(\"cli\", \"[OPTIONS]\", prefix=styled_prefix)",
+     "tests/test_formatting.py:587 | f.write_usage(prog, args)",
+     "tests/test_formatting.py:589 | f.write_usage(prog, args, prefix=prefix)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_ADDED_REQUIRED",
+    "symbol": "invoke",
+    "places": 5,
+    "sample": [
+     "tests/test_commands.py:12 | return ctx.invoke(other_cmd, arg=42)",
+     "tests/test_commands.py:37 | ctx.invoke(test, count=42)",
+     "tests/test_commands.py:172 | ctx.invoke(self.callback, ctx.args, **ctx.params)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "HelpFormatter",
+    "places": 5,
+    "sample": [
+     "tests/test_custom_classes.py:52 | class CustomFormatter(click.HelpFormatter):",
+     "tests/test_formatting.py:431 | formatter = click.HelpFormatter(width=len(\"  Lorem ipsum dolor sit amet,\"))",
+     "tests/test_formatting.py:512 | formatter = click.HelpFormatter(width=40)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "ATTRIBUTE_CHANGED_VALUE",
+    "symbol": "type",
+    "places": 10,
+    "sample": [
+     "tests/test_options.py:661 | assert opt.type is click.INT",
+     "tests/test_options.py:670 | assert isinstance(opt.type, click.Tuple)",
+     "tests/test_options.py:671 | assert opt.type.types == [click.INT, click.STRING]"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "ParamType",
+    "places": 18,
+    "sample": [
+     "examples/validation/validation.py:12 | class URL(click.ParamType[urlparse.ParseResult]):",
+     "tests/test_defaults.py:281 | class Source(click.ParamType):",
+     "tests/test_formatting.py:318 | class MyType(click.ParamType):"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Argument",
+    "places": 31,
+    "sample": [
+     "tests/test_arguments.py:272 | argument = click.Argument([\"a\"], required=True)",
+     "tests/test_arguments.py:415 | arg = click.Argument([\"foo\"], required=False, help=help_text, deprecated=deprecated)",
+     "tests/test_arguments.py:444 | click.Argument([\"a\"], required=True, deprecated=True)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "style",
+    "places": 34,
+    "sample": [
+     "examples/colors/colors.py:32 | click.echo(click.style(f\"I am colored {color}\", fg=color))",
+     "examples/colors/colors.py:34 | click.echo(click.style(f\"I am colored {color} and bold\", fg=color, bold=True))",
+     "examples/colors/colors.py:36 | click.echo(click.style(f\"I am reverse colored {color}\", fg=color, reverse=True))"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Context",
+    "places": 43,
+    "sample": [
+     "tests/test_arguments.py:271 | ctx = click.Context(click.Command(\"\"))",
+     "tests/test_arguments.py:416 | ctx = click.Context(click.Command(\"cli\"))",
+     "tests/test_basic.py:59 | ctx = click.Context(cli, help_option_names=help_names)"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "CliRunner",
+    "places": 63,
+    "sample": [
+     "tests/conftest.py:8 | return CliRunner()",
+     "tests/test_context.py:253 | runner = click.testing.CliRunner()",
+     "tests/test_options.py:3652 | runner = CliRunner()"
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Option",
+    "places": 88,
+    "sample": [
+     "tests/test_basic.py:38 | [click.Option([\"--assist\", \"help\"])],",
+     "tests/test_basic.py:42 | ([\"--man\"], [click.Option([\"--foo\", \"man\"])], [\"--foo\", \"value\"], \"value\\n\"),",
+     "tests/test_basic.py:850 | click.Option("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_MOVED",
+    "symbol": "__init__",
+    "places": 91,
+    "sample": [
+     "tests/test_basic.py:38 | [click.Option([\"--assist\", \"help\"])],",
+     "tests/test_basic.py:42 | ([\"--man\"], [click.Option([\"--foo\", \"man\"])], [\"--foo\", \"value\"], \"value\\n\"),",
+     "tests/test_basic.py:850 | click.Option("
+    ]
+   },
+   {
+    "severity": "review",
+    "kind": "PARAMETER_CHANGED_DEFAULT",
+    "symbol": "__init__",
+    "places": 143,
+    "sample": [
+     "tests/conftest.py:8 | return CliRunner()",
+     "tests/test_basic.py:38 | [click.Option([\"--assist\", \"help\"])],",
+     "tests/test_basic.py:42 | ([\"--man\"], [click.Option([\"--foo\", \"man\"])], [\"--foo\", \"value\"], \"value\\n\"),"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 2.0
+ },
+ {
+  "repo": "ansible-lint",
+  "package": "jinja2",
+  "from": "2.11.3",
+  "to": "3.1.4",
+  "changes": 259,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Environment",
+    "places": 2,
+    "sample": [
+     "src/ansiblelint/rules/jinja.py:226 | env = jinja2.Environment(trim_blocks=False)",
+     "src/ansiblelint/utils.py:307 | env = Environment(autoescape=True)"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 1.6
+ },
+ {
+  "repo": "ansible-lint",
+  "package": "pyyaml",
+  "from": "6.0.1",
+  "to": "6.0.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.4
+ },
+ {
+  "repo": "scrapy",
+  "package": "attrs",
+  "from": "21.4.0",
+  "to": "24.2.0",
+  "changes": 2,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "scrapy",
+  "package": "httpx",
+  "from": "0.23.3",
+  "to": "0.27.2",
+  "changes": 1,
+  "groups": [],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.7
+ },
+ {
+  "repo": "requests-html",
+  "package": "requests",
+  "from": "2.25.1",
+  "to": "2.32.3",
+  "changes": 14,
+  "groups": [
+   {
+    "severity": "review",
+    "kind": "CLASS_REMOVED_BASE",
+    "symbol": "Response",
+    "places": 1,
+    "sample": [
+     "requests_html.py:711 | class HTMLResponse(requests.Response):"
+    ]
+   }
+  ],
+  "deprecations": [],
+  "unverified_removals": 0,
+  "secs": 0.2
+ }
+]

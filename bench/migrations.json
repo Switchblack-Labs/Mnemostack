@@ -1,0 +1,29 @@
+[
+ {
+  "name": "distiller",
+  "url": "https://github.com/OpenChemistry/distiller",
+  "sha": "6621beebd0c585d01f764b9578ce0b75f31c71fe",
+  "package": "pydantic",
+  "distribution": "pydantic",
+  "from": "1.10.10",
+  "to": "2.13.5"
+ },
+ {
+  "name": "dstack",
+  "url": "https://github.com/dstackai/dstack",
+  "sha": "d10edfdc43f015a225bca7d230b20c989193622a",
+  "package": "pydantic",
+  "distribution": "pydantic",
+  "from": "1.10.26",
+  "to": "2.12.5"
+ },
+ {
+  "name": "onegov-cloud",
+  "url": "https://github.com/OneGov/onegov-cloud",
+  "sha": "dea56b3a588dcccaada62728638773f5bdfb967b",
+  "package": "sqlalchemy",
+  "distribution": "sqlalchemy",
+  "from": "1.4.54",
+  "to": "2.0.52"
+ }
+]
