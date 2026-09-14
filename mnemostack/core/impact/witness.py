@@ -313,7 +313,13 @@ def witness_signatures(
     lines are decided too; without it, only from the site's own line. A call
     whose binding cannot be decided keeps its finding at REVIEW, not BREAK.
     """
-    from mnemostack.core.impact.binding import BIND_DECIDES, still_binds
+    from mnemostack.core.impact.binding import (
+        BIND_DECIDES,
+        changed_parameter,
+        passes,
+        positions_unchanged,
+        still_binds,
+    )
     from mnemostack.core.reach.static import parse_source
 
     trees: dict[str, ast.Module | None] = {}
@@ -359,6 +365,40 @@ def witness_signatures(
         if comparable:
             if old[field] == new[field]:
                 continue  # griffe reported a change the running code does not show
+            is_call = impact.site.kind.value == "call"
+            if field == "signature" and impact.change.kind == "PARAMETER_CHANGED_DEFAULT":
+                name = changed_parameter(impact.change.old)
+                was = {p[0]: p[2] for p in old["signature"]}
+                now = {p[0]: p[2] for p in new["signature"]}
+                if name in was and name in now and was[name] == now[name] != "<object>":
+                    continue  # this parameter's default is the same in the running code
+                if (
+                    is_call
+                    and name in now
+                    and passes(
+                        impact.site.text,
+                        impact.change.fqn,
+                        new["signature"],
+                        name,
+                        tree=tree_of(impact.site.file),
+                        line=impact.site.line,
+                    )
+                    is True
+                ):
+                    continue  # the call passes the parameter, so no default applies
+            if field == "signature" and impact.change.kind == "PARAMETER_MOVED" and is_call:
+                if (
+                    positions_unchanged(
+                        impact.site.text,
+                        impact.change.fqn,
+                        old["signature"],
+                        new["signature"],
+                        tree=tree_of(impact.site.file),
+                        line=impact.site.line,
+                    )
+                    is True
+                ):
+                    continue  # no positional argument here lands on a different parameter
             if (
                 field == "signature"
                 and impact.site.kind.value == "call"

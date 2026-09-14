@@ -106,7 +106,7 @@ or the check itself failed. Packages imported but not installed are skipped.
   findings, and both are real. On two real pydantic 1 to 2 migration commits,
   36% and 61% of the changed lines that touch pydantic carry a breaking
   finding, and 96% and 78% counting deprecations. On a SQLAlchemy 2.0 migration
-  that is mostly a typing rewrite, 3% do. [`bench/`](bench/README.md) reruns all
+  that is mostly a typing rewrite, 0.1% do. [`bench/`](bench/README.md) reruns all
   of it.
 
 ## Install

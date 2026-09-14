@@ -25,6 +25,7 @@ whose positional count the source does not show, is left undecided.
 from __future__ import annotations
 
 import ast
+import re
 
 POSITIONAL = frozenset({"POSITIONAL_ONLY", "POSITIONAL_OR_KEYWORD"})
 KEYWORDABLE = frozenset({"POSITIONAL_OR_KEYWORD", "KEYWORD_ONLY"})
@@ -133,12 +134,7 @@ def still_binds(
     A constructor change is reported against `X.__init__`, but the line calls
     `X(...)`, so the class name is what gets searched for.
     """
-    parts = fqn.split(".")
-    name = parts[-2] if parts[-1] == "__init__" and len(parts) > 1 else parts[-1]
-    if tree is not None and line is not None:
-        shapes = tree_call_shapes(tree, name, line)
-    else:
-        shapes = call_shapes(text, name)
+    shapes = line_shapes(text, fqn, tree, line)
     if not shapes:
         return None
 
@@ -164,8 +160,86 @@ def still_binds(
                 relaxed = [[p[0], p[1], p[2] if p[2] is not None else "<given>"] for p in params]
                 fits = None if binds(relaxed, positional, keywords) else False
         verdicts.append(fits)
+    return _all_of(verdicts)
+
+
+def _all_of(verdicts: list[bool | None]) -> bool | None:
+    """False if any call says no, None if any cannot tell, otherwise True."""
     if False in verdicts:
         return False
     if None in verdicts:
         return None
     return True
+
+
+def line_shapes(
+    text: str, fqn: str, tree: ast.AST | None = None, line: int | None = None
+) -> list[tuple[int, list[str], bool]] | None:
+    """The calls to a changed symbol at one site, from the file's tree when there is one.
+
+    A constructor change is reported against `X.__init__`, but the line calls
+    `X(...)`, so the class name is what gets searched for.
+    """
+    parts = fqn.split(".")
+    name = parts[-2] if parts[-1] == "__init__" and len(parts) > 1 else parts[-1]
+    if tree is not None and line is not None:
+        return tree_call_shapes(tree, name, line)
+    return call_shapes(text, name)
+
+
+_PARAMETER = re.compile(r"^\[[^\]]+\]\s*\**(\w+)")
+
+
+def changed_parameter(description: str | None) -> str | None:
+    """The parameter a griffe change describes: `[keyword-only] strict: bool = False`."""
+    match = _PARAMETER.match(description.strip()) if description else None
+    return match.group(1) if match else None
+
+
+def passes(
+    text: str,
+    fqn: str,
+    params: list,
+    name: str,
+    tree: ast.AST | None = None,
+    line: int | None = None,
+) -> bool | None:
+    """Whether every call at this site passes parameter `name` itself.
+
+    A call that passes a parameter never sees its default, so a changed default
+    cannot reach it. `Field(..., description="id")` passes `default`
+    positionally, whatever pydantic changed it to.
+    """
+    shapes = line_shapes(text, fqn, tree, line)
+    if not shapes:
+        return None
+    slots = [p[0] for p in params if p[1] in POSITIONAL]
+    verdicts: list[bool | None] = []
+    for positional, keywords, spread in shapes:
+        if name in keywords or name in slots[:positional]:
+            verdicts.append(True)
+        else:
+            verdicts.append(None if spread else False)  # a **dict may pass it
+    return _all_of(verdicts)
+
+
+def positions_unchanged(
+    text: str,
+    fqn: str,
+    old_params: list,
+    new_params: list,
+    tree: ast.AST | None = None,
+    line: int | None = None,
+) -> bool | None:
+    """Whether every call at this site hands its positional arguments to the same parameters.
+
+    A moved parameter only matters to a call whose positional arguments reach
+    it. `click.style(text, fg=color)` passes one positional, and whatever moved
+    after the first slot cannot touch it.
+    """
+    shapes = line_shapes(text, fqn, tree, line)
+    if not shapes:
+        return None
+    old_slots = [p[0] for p in old_params if p[1] in POSITIONAL]
+    new_slots = [p[0] for p in new_params if p[1] in POSITIONAL]
+    return _all_of([old_slots[:count] == new_slots[:count] for count, _, _ in shapes])
