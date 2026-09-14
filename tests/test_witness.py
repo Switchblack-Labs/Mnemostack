@@ -385,3 +385,93 @@ def test_a_class_that_cannot_be_described_keeps_its_finding():
         [impact],
         {},
     )
+
+
+# --- a changed default or a moved parameter, judged per call ----------------
+
+
+def _described_change(text: str, kind: str, old: str) -> Impact:
+    from dataclasses import replace
+
+    impact = _call_impact(text, kind=kind)
+    return replace(impact, change=replace(impact.change, old=old), severity=Severity.REVIEW)
+
+
+def test_a_changed_default_does_not_reach_a_call_that_passes_the_parameter():
+    before = {
+        "pkg.f": _describe(
+            [["x", "POSITIONAL_OR_KEYWORD", None], ["strict", "KEYWORD_ONLY", "False"]]
+        )
+    }
+    after = {
+        "pkg.f": _describe(
+            [["x", "POSITIONAL_OR_KEYWORD", None], ["strict", "KEYWORD_ONLY", "True"]]
+        )
+    }
+    old = "[keyword-only] strict: bool = False"
+    passing = _described_change("f(1, strict=True)", "PARAMETER_CHANGED_DEFAULT", old)
+    omitting = _described_change("f(1)", "PARAMETER_CHANGED_DEFAULT", old)
+    kept = witness_signatures([passing, omitting], "pkg", "1.0", "2.0", probe=_probe(before, after))
+    assert kept == [omitting]
+
+
+def test_a_default_that_is_plainly_the_same_is_dropped_and_an_opaque_one_is_kept():
+    """Other parameters changed, so the signatures differ; this default did not."""
+    same = "[keyword-only] strict: bool = False"
+    before = {
+        "pkg.f": _describe(
+            [["x", "POSITIONAL_OR_KEYWORD", None], ["strict", "KEYWORD_ONLY", "False"]]
+        )
+    }
+    after = {
+        "pkg.f": _describe(
+            [["y", "POSITIONAL_OR_KEYWORD", None], ["strict", "KEYWORD_ONLY", "False"]]
+        )
+    }
+    plain = _described_change("f(1)", "PARAMETER_CHANGED_DEFAULT", same)
+    assert witness_signatures([plain], "pkg", "1.0", "2.0", probe=_probe(before, after)) == []
+
+    opaque_before = {
+        "pkg.f": _describe(
+            [["x", "POSITIONAL_OR_KEYWORD", None], ["d", "KEYWORD_ONLY", "<object>"]]
+        )
+    }
+    opaque_after = {
+        "pkg.f": _describe(
+            [["y", "POSITIONAL_OR_KEYWORD", None], ["d", "KEYWORD_ONLY", "<object>"]]
+        )
+    }
+    opaque = _described_change(
+        "f(1)", "PARAMETER_CHANGED_DEFAULT", "[keyword-only] d: Any = Undefined"
+    )
+    probe = _probe(opaque_before, opaque_after)
+    assert witness_signatures([opaque], "pkg", "1.0", "2.0", probe=probe) == [opaque]
+
+
+def test_a_moved_parameter_does_not_reach_a_call_passing_it_by_keyword():
+    """click.style(text, fg=color): nothing positional moved under it."""
+    before = {
+        "pkg.f": _describe(
+            [
+                ["a", "POSITIONAL_OR_KEYWORD", None],
+                ["b", "POSITIONAL_OR_KEYWORD", "0"],
+                ["c", "POSITIONAL_OR_KEYWORD", "0"],
+            ]
+        )
+    }
+    after = {
+        "pkg.f": _describe(
+            [
+                ["a", "POSITIONAL_OR_KEYWORD", None],
+                ["c", "POSITIONAL_OR_KEYWORD", "0"],
+                ["b", "POSITIONAL_OR_KEYWORD", "0"],
+            ]
+        )
+    }
+    old = "[positional or keyword] b: int = 0"
+    by_keyword = _described_change("f(1, c=3)", "PARAMETER_MOVED", old)
+    positional = _described_change("f(1, 2)", "PARAMETER_MOVED", old)
+    kept = witness_signatures(
+        [by_keyword, positional], "pkg", "1.0", "2.0", probe=_probe(before, after)
+    )
+    assert kept == [positional]

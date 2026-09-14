@@ -129,3 +129,35 @@ def test_spread_kwargs_may_supply_a_missing_required_parameter():
 def test_literal_arguments_that_cannot_bind_still_do_not_bind_beside_spread_kwargs():
     new = [["url", PK, None]]
     assert still_binds("connect(url, extra, **auth)", "paylib.connect", new) is False
+
+
+# --- which parameters a call passes, and where its positionals land ---------
+
+
+def test_changed_parameter_is_read_from_griffes_description():
+    from mnemostack.core.impact.binding import changed_parameter
+
+    assert changed_parameter("[keyword-only] strict: bool | None = None") == "strict"
+    assert changed_parameter("[positional or keyword] default: Any = Undefined") == "default"
+    assert changed_parameter("[variadic keyword] **extra: Any") == "extra"
+    assert changed_parameter(None) is None
+
+
+def test_a_parameter_passed_by_keyword_or_position_is_passed():
+    from mnemostack.core.impact.binding import passes
+
+    params = [["default", PK, "None"], ["description", KO, "None"]]
+    assert passes("Field(..., description='id')", "pydantic.Field", params, "default") is True
+    assert passes("Field(description='id')", "pydantic.Field", params, "description") is True
+    assert passes("Field(description='id')", "pydantic.Field", params, "default") is False
+    assert passes("Field(**extra)", "pydantic.Field", params, "default") is None
+
+
+def test_positional_arguments_that_land_on_the_same_parameters_are_unchanged():
+    from mnemostack.core.impact.binding import positions_unchanged
+
+    old = [["text", PK, None], ["fg", PK, "None"], ["bg", PK, "None"]]
+    new = [["text", PK, None], ["bg", PK, "None"], ["fg", PK, "None"]]
+    assert positions_unchanged("style(t, fg='red')", "click.style", old, new) is True
+    assert positions_unchanged("style(t, 'red')", "click.style", old, new) is False
+    assert positions_unchanged("style(*parts)", "click.style", old, new) is None
