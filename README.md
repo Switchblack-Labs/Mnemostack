@@ -4,27 +4,31 @@ Before you upgrade a Python dependency, see which lines of *your* code the new
 version breaks.
 
 ```console
-$ mnemostack upgrade-check mcp 2.2.0
-mcp 1.28.1 -> 2.2.0: the library has 357 breaking API change(s). Only what reaches your code is listed.
+$ mnemostack upgrade-check pydantic 2.9.2 --from-version 1.10.13 --repo instructor
+pydantic 1.10.13 -> 2.9.2: the library has 711 breaking API change(s). Only what reaches your code is listed.
 
-  1 change(s) reach your code, across 2 place(s):
+  5 change(s) reach your code, across 287 place(s):
 
-  [BREAK ] OBJECT_REMOVED  mcp.server.FastMCP
-           mnemostack/mcp/tools.py:7
-             from mcp.server.fastmcp import FastMCP
-           mnemostack/mcp/tools.py:10
-             mcp = FastMCP("mnemostack")
+  [BREAK ] OBJECT_REMOVED  pydantic.parse_file_as
+           examples/gpt-engineer/refactor.py:4
+             from pydantic import Field, parse_file_as
+           examples/gpt-engineer/refactor.py:97
+             program = parse_file_as(path="program.json", type_=Program)
+
+  [REVIEW] PARAMETER_REMOVED  pydantic.main.create_model
+           instructor/v2/core/response_model.py:16
+             _create_dynamic_model = cast(Callable[..., type[BaseModel]], create_model)
+  ...
 ```
 
-That is this repository, checked against a newer release of one of its own
-dependencies.
+That is [instructor](https://github.com/567-labs/instructor) at the commit
+pinned in [`bench/`](bench/README.md), checked for a move from pydantic 1 to 2.
 
 ## Commands
 
 ```console
 mnemostack upgrade-check <package> <to-version> [--from-version X] [--distribution NAME] [--repo .]
 mnemostack sweep [--repo .] [--quiet]
-mnemostack                     # MCP server over stdio, with one tool: upgrade_check
 ```
 
 `upgrade-check` exits 1 if anything is graded BREAK, 2 if the check could not
@@ -36,19 +40,8 @@ read from the environment mnemostack itself runs in. With no environment to
 ask, pass it explicitly.
 
 `sweep` runs the same check for every package the repo imports and has
-installed in that environment, against its latest release on PyPI:
-
-```console
-$ mnemostack sweep
-  breaks        mcp                    1.28.1 -> 2.2.0           [2 place(s)]
-  safe          pydantic               2.13.4 -> 2.13.5
-  current       platformdirs           4.11.8 -> 4.11.8
-  ...
-
-  1 of 2 available upgrade(s) can be taken with nothing to change; 4 already current. 1 need attention.
-```
-
-Statuses: `breaks`, `review`, `unverified` (possible removals nothing could
+installed in that environment, against its latest release on PyPI, and ranks
+the packages worst first. Statuses: `breaks`, `review`, `unverified` (possible removals nothing could
 confirm), `deprecations`, `safe`, `current`, and `unknown` or `error` when PyPI
 or the check itself failed. Packages imported but not installed are skipped.
 
