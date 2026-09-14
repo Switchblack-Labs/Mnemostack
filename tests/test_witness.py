@@ -18,6 +18,7 @@ from mnemostack.core.impact.witness import (
     uv_probe,
     uv_resolver,
     witness_removals,
+    witness_removed_bases,
     witness_signatures,
 )
 from mnemostack.core.reach import RefKind, Site
@@ -327,3 +328,60 @@ def test_a_call_whose_arguments_are_not_in_the_source_is_review_not_break():
     impact = _call_impact("f(x, *args)", kind="PARAMETER_REMOVED")
     (kept,) = witness_signatures([impact], "pkg", "1.0", "2.0", probe=_probe(before, after))
     assert kept.severity is Severity.REVIEW
+
+
+# --- a removed base class is only the public members it took ----------------
+
+
+def _base_impact(via: str | None = "pkg.Model") -> Impact:
+    site = Site(
+        file="a.py",
+        line=1,
+        symbol="Model",
+        kind=RefKind.SUBCLASS,
+        text="class User(Model):",
+        via=via,
+    )
+    change = ApiChange(
+        fqn="pkg.main.Model", kind="CLASS_REMOVED_BASE", old="Representation", new=None
+    )
+    return Impact(site=site, change=change, severity=Severity.REVIEW)
+
+
+def _class(members):
+    return {
+        "resolves": True,
+        "kind": "class",
+        "signature": None,
+        "warning": None,
+        "members": members,
+    }
+
+
+def test_a_removed_base_that_took_nothing_public_is_dropped():
+    """click 8's CliRunner lost a base and no public member: 118 findings of nothing."""
+    same = {"pkg.Model": _class(["invoke", "isolation"])}
+    kept, lost = witness_removed_bases(
+        [_base_impact()], "pkg", "1.0", "2.0", probe=_probe(same, same)
+    )
+    assert kept == [] and lost == {}
+
+
+def test_a_removed_base_becomes_the_members_it_took():
+    """pydantic 2's BaseModel lost its bases and exactly one public member, Config."""
+    before = {"pkg.Model": _class(["Config", "dict"])}
+    after = {"pkg.Model": _class(["dict", "model_dump"])}
+    kept, lost = witness_removed_bases(
+        [_base_impact()], "pkg", "1.0", "2.0", probe=_probe(before, after)
+    )
+    assert kept == [] and lost == {"pkg.main.Model": {"Config"}}
+
+
+def test_a_class_that_cannot_be_described_keeps_its_finding():
+    impact = _base_impact()
+    kept, lost = witness_removed_bases([impact], "pkg", "1.0", "2.0", probe=_probe({}, {}))
+    assert kept == [impact] and lost == {}
+    assert witness_removed_bases([impact], "pkg", None, "2.0", probe=_probe({}, {})) == (
+        [impact],
+        {},
+    )

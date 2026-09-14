@@ -320,12 +320,31 @@ def check_upgrade(
 
     # Imported here rather than at the top to keep witness, which depends on
     # propagate, out of the import path of anything that only needs the diff.
-    from mnemostack.core.impact.witness import witness_removals, witness_signatures
+    from mnemostack.core.impact.witness import (
+        witness_removals,
+        witness_removed_bases,
+        witness_signatures,
+    )
 
     # A removal is only reported if the import the code actually uses fails in
     # the target version. Measured across twenty repos we did not write, griffe's
     # removals were mostly re-exports that still import fine.
-    impacts, unwitnessed, warned = witness_removals(impact_report(sites, real), dist, to_version)
+    # A removed base class is the public members it took away. Each is looked
+    # for as a removal of its own and goes through the same import witness, so
+    # `Model.Config` is reported and `class User(Model)` is not.
+    impacts, lost = witness_removed_bases(
+        impact_report(sites, real), dist, from_version, to_version
+    )
+    inherited = [
+        ApiChange(fqn=f"{owner}.{member}", kind="OBJECT_REMOVED", old=None, new=None)
+        for owner, gone in sorted(lost.items())
+        for member in sorted(gone)
+    ]
+    if inherited:
+        symbols = changed_symbols(inherited, package)
+        found = find_sites(repo, package, symbols, members=symbols)
+        impacts += impact_report(found, inherited)
+    impacts, unwitnessed, warned = witness_removals(impacts, dist, to_version)
 
     # A removal that still imports behind a deprecation warning is a migration
     # the decorator scan cannot see: pydantic 2 warns from a module __getattr__.
