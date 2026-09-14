@@ -56,3 +56,12 @@ class Site:
     was written expecting the symbol to disappear. Its removal is a line to clean
     up, not a break.
     """
+    unscoped: bool = False
+    """Whether the receiver is known to be the class only somewhere else in the file.
+
+    click's `ctx.invoke(...)` gets `ctx` from a decorator, and matches only
+    because another function binds `ctx = click.Context(...)`. The same name is
+    usually the same type, but not always: onegov-cloud's `session` is a requests
+    session in one function and a SQLAlchemy one in another. Such a line is
+    worth a look, and never shown to break.
+    """

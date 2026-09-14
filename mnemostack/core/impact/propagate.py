@@ -119,10 +119,11 @@ def impact_report(sites: list[Site], changes: list[ApiChange]) -> list[Impact]:
             severity = severity_of(change, site.kind)
             if severity is Severity.NONE:
                 continue
-            if site.guarded and severity is Severity.BREAK:
-                # A compatibility shim already expects this change; the line is
+            if (site.guarded or site.unscoped) and severity is Severity.BREAK:
+                # A compatibility shim already expects this change: the line is
                 # cleanup, not a break. Across twenty repos, two of the three
-                # removals the witness confirmed were exactly this.
+                # removals the witness confirmed were exactly this. A receiver
+                # known to be the class only elsewhere in the file is a guess.
                 severity = Severity.REVIEW
             # One entry per place and per change. The filters downstream judge each
             # change on its own; collapse() reduces a place to its worst change only

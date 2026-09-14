@@ -73,11 +73,11 @@
   "changed_lines": 6404,
   "relevant_lines": 2880,
   "break": {
-   "sites": 4,
+   "sites": 0,
    "on_changed_lines": 0
   },
   "review": {
-   "sites": 145,
+   "sites": 147,
    "on_changed_lines": 95
   },
   "deprecation": {
