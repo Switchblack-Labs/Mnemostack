@@ -11,7 +11,7 @@
    "on_changed_lines": 3
   },
   "review": {
-   "sites": 61,
+   "sites": 10,
    "on_changed_lines": 8
   },
   "deprecation": {
@@ -39,15 +39,15 @@
    "on_changed_lines": 2
   },
   "review": {
-   "sites": 767,
-   "on_changed_lines": 118
+   "sites": 742,
+   "on_changed_lines": 117
   },
   "deprecation": {
    "sites": 288,
    "on_changed_lines": 288
   },
-  "recall_findings": 0.361,
-  "recall_with_deprecations": 0.958,
+  "recall_findings": 0.358,
+  "recall_with_deprecations": 0.955,
   "missed": [
    "scripts/docs/gen_schema_reference.py:16 | from pydantic.main import BaseModel",
    "scripts/docs/gen_schema_reference.py:33 | return issubclass(type_, BaseModel) and not issubclass(type_, Range)",
@@ -55,6 +55,7 @@
    "src/dstack/_internal/core/backends/azure/models.py:3 | from pydantic import Field",
    "src/dstack/_internal/core/backends/models.py:3 | from pydantic import Field",
    "src/dstack/_internal/core/models/common.py:6 | from pydantic import Field",
+   "src/dstack/_internal/core/models/envs.py:42 | class Env(BaseModel):",
    "src/dstack/_internal/core/models/repos/remote.py:10 | from pydantic import Field",
    "src/dstack/_internal/proxy/gateway/services/model_routers/base.py:5 | from pydantic import BaseModel",
    "src/dstack/_internal/proxy/lib/models.py:6 | from pydantic import BaseModel, Field",
@@ -77,16 +78,19 @@
    "on_changed_lines": 0
   },
   "review": {
-   "sites": 147,
-   "on_changed_lines": 95
+   "sites": 138,
+   "on_changed_lines": 86
   },
   "deprecation": {
    "sites": 11,
    "on_changed_lines": 1
   },
-  "recall_findings": 0.032,
-  "recall_with_deprecations": 0.032,
+  "recall_findings": 0.028,
+  "recall_with_deprecations": 0.029,
   "missed": [
+   "src/onegov/activity/collections/activity.py:339 | array(self.filter.tags)))  # type:ignore[call-overload]",
+   "src/onegov/activity/collections/activity.py:437 | o = o.filter(Occasion.active_days.op('&&')(array(  # type:ignore",
+   "src/onegov/activity/collections/activity.py:448 | Occasion.weekdays.op('<@')(array(  # type:ignore[call-overload]",
    "src/onegov/activity/collections/activity.py:518 | query = select(func.array_agg(column('keys')))",
    "src/onegov/activity/collections/activity.py:600 | weeknumbers = {n[:2] for n in self.session.execute(text(\"\"\"",
    "src/onegov/activity/collections/volunteer.py:16 | from sqlalchemy.orm import Query, Session",
@@ -579,6 +583,7 @@
    "src/onegov/directory/archive.py:462 | self.write_paths(object_session(directory), paths, fid_to_entry)",
    "src/onegov/directory/collections/directory_entry.py:8 | from sqlalchemy import and_, desc",
    "src/onegov/directory/collections/directory_entry.py:82 | super().__init__(object_session(directory))",
+   "src/onegov/directory/collections/directory_entry.py:145 | cls._keywords.has_any(array(group_values))  # type:ignore",
    "src/onegov/directory/collections/directory_entry.py:149 | query = query.filter(and_(*values))",
    "src/onegov/directory/collections/directory_entry.py:152 | query = query.order_by(desc(cls.order))",
    "src/onegov/directory/models/directory.py:23 | from sqlalchemy import Boolean, Column",
@@ -1093,6 +1098,8 @@
    "src/onegov/election_day/views/election/connections.py:115 | 'connections': get_connection_results_api(self, object_session(self)),",
    "src/onegov/election_day/views/election/main.py:17 | from sqlalchemy.orm import object_session",
    "src/onegov/election_day/views/election/main.py:163 | session = object_session(self)",
+   "src/onegov/event/collections/occurrences.py:540 | Occurrence._tags.has_any(array(self.tags))  # type:ignore",
+   "src/onegov/event/collections/occurrences.py:551 | array(values)  # type:ignore[call-overload]",
    "src/onegov/event/collections/occurrences.py:557 | query = query.filter(and_(*values))",
    "src/onegov/event/models/event.py:28 | from sqlalchemy import Column",
    "src/onegov/event/models/event.py:30 | from sqlalchemy import Text",
@@ -1468,6 +1475,7 @@
    "src/onegov/newsletter/models.py:191 | Index(",
    "src/onegov/newsletter/models.py:193 | unique=True, postgresql_where=column('group') == None",
    "src/onegov/org/boardlets.py:306 | func.lower(Ticket.ticket_email) == email.lower()",
+   "src/onegov/org/cli.py:683 | Event._tags.has_any(array(tag))  # type:ignore",
    "src/onegov/org/management.py:186 | with object_session(page).no_autoflush:",
    "src/onegov/org/models/directory.py:47 | from sqlalchemy.orm import Query, Session, relationship",
    "src/onegov/org/models/directory.py:457 | entries: relationship[list[ExtendedDirectoryEntry]]  # type: ignore[assignment]",
@@ -1534,6 +1542,7 @@
    "src/onegov/org/models/organisation.py:79 | theme_options: Column[dict[str, Any] | None] = Column(",
    "src/onegov/org/models/organisation.py:87 | meta: Column[dict[str, Any]] = Column(  # type:ignore[assignment]",
    "src/onegov/org/models/page.py:33 | from sqlalchemy.orm import undefer, object_session",
+   "src/onegov/org/models/page.py:414 | News.meta['hashtags'].has_any(array(self.filter_tags))  # type: ignore[call-overload]",
    "src/onegov/org/models/parliament.py:20 | from sqlalchemy.orm import relationship",
    "src/onegov/org/models/parliament.py:145 | relationship)[list[PoliticalBusinessParticipation]] = (",
    "src/onegov/org/models/parliament.py:146 | relationship(",
@@ -2538,6 +2547,7 @@
    "src/onegov/user/models/user.py:221 | @hybrid_property",
    "src/onegov/user/upgrade.py:12 | from sqlalchemy import Boolean, Column, Text",
    "src/onegov/winterthur/collections/address.py:37 | def streets(self) -> Query[StreetRow]:",
+   "src/onegov/winterthur/directory_search_widgets.py:151 | array(ids),  # type:ignore[call-overload]",
    "src/onegov/winterthur/models/address.py:5 | from sqlalchemy import Column",
    "src/onegov/winterthur/models/address.py:6 | from sqlalchemy import Integer",
    "src/onegov/winterthur/models/address.py:7 | from sqlalchemy import Text",

@@ -54,8 +54,8 @@ estimate accuracy on your code.
 Measured on this repository at the commit these files were added with, and
 recorded in [`results/`](results).
 
-**Noise.** 52 (repository, package) pairs: 2 BREAK groups, 105 REVIEW groups,
-2,631 places in total, no failures. Both BREAKs are real:
+**Noise.** 52 (repository, package) pairs: 2 BREAK groups, 72 REVIEW groups,
+1,111 places in total, no failures. Both BREAKs are real:
 
 - instructor calls pydantic's `parse_file_as`, which pydantic 2 removed;
 - pydantic-settings calls `PostgresDsn(...)`, which pydantic 2 turned from a
@@ -66,8 +66,8 @@ recorded in [`results/`](results).
 | migration | relevant lines | breaking findings | with deprecations |
 |---|---|---|---|
 | distiller, pydantic 1.10.10 → 2.13.5 | 18 | 0.611 | 0.778 |
-| dstack, pydantic 1.10.26 → 2.12.5 | 330 | 0.361 | 0.958 |
-| onegov-cloud, SQLAlchemy 1.4.54 → 2.0.52 | 2,880 | 0.032 | 0.032 |
+| dstack, pydantic 1.10.26 → 2.12.5 | 330 | 0.358 | 0.955 |
+| onegov-cloud, SQLAlchemy 1.4.54 → 2.0.52 | 2,880 | 0.028 | 0.029 |
 
 Most relevant lines missed on the pydantic migrations are import lines edited to
 add names. The rest are behaviour the API diff cannot see: an `AnyHttpUrl = None`

@@ -105,7 +105,14 @@ def describe(path):
         signature = [[p.name, p.kind.name, default(p.default)] for p in params]
     except (TypeError, ValueError):
         signature = None
-    return {"resolves": True, "kind": kind, "signature": signature, "warning": warning}
+    members = sorted(n for n in dir(obj) if not n.startswith("_")) if kind == "class" else None
+    return {
+        "resolves": True,
+        "kind": kind,
+        "signature": signature,
+        "warning": warning,
+        "members": members,
+    }
 
 print(json.dumps({p: describe(p) for p in json.loads(sys.argv[1])}))
 """
@@ -227,6 +234,57 @@ def witness_removals(
         elif result is None:
             unwitnessed += 1
     return kept, unwitnessed, warned
+
+
+def witness_removed_bases(
+    impacts: Iterable[Impact],
+    distribution: str,
+    old_version: str | None,
+    new_version: str,
+    probe: Prober = uv_probe,
+) -> tuple[list[Impact], dict[str, set[str]]]:
+    """Replace a removed base class with the public members it actually took away.
+
+    griffe reports CLASS_REMOVED_BASE when a base leaves a class's inheritance
+    chain, and every subclass and constructor call was flagged for it. What code
+    can feel is a public member that left with the base. pydantic 2 drops
+    BaseModel's internal bases, and the pinned corpus flagged 1,166 `class
+    X(BaseModel)` lines for it, when the only public member BaseModel lost is
+    `Config`. click 8's CliRunner lost none, and was flagged 118 times.
+
+    So the class is described in both versions and the finding is always
+    dropped. The public members that are gone come back keyed by the class, to
+    be looked for as removals in their own right: a line using `Model.Config` is
+    affected, a line merely subclassing the model is not.
+
+    If the old version is unknown, the probe cannot run, or either version cannot
+    be described, the finding stands.
+    """
+    impacts = list(impacts)
+    bases = {i.site.via for i in impacts if i.change.kind == "CLASS_REMOVED_BASE" and i.site.via}
+    if not old_version or not bases:
+        return impacts, {}
+    before = probe(distribution, old_version, sorted(bases))
+    after = probe(distribution, new_version, sorted(bases))
+    if before is None or after is None:
+        return impacts, {}
+
+    kept: list[Impact] = []
+    lost: dict[str, set[str]] = {}
+    for impact in impacts:
+        via = impact.site.via
+        if impact.change.kind != "CLASS_REMOVED_BASE" or not via:
+            kept.append(impact)
+            continue
+        old_members = (before.get(via) or {}).get("members")
+        new_members = (after.get(via) or {}).get("members")
+        if old_members is None or new_members is None:
+            kept.append(impact)
+            continue
+        gone = set(old_members) - set(new_members)
+        if gone:
+            lost.setdefault(impact.change.fqn, set()).update(gone)
+    return kept, lost
 
 
 def witness_signatures(
