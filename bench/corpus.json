@@ -1,0 +1,37 @@
+{
+ "about": "20 widely used Python repositories, each pinned to its default branch as of 2026-09-12 18:00 UTC. Each is checked against every case whose package it imports.",
+ "cases": [
+  ["pydantic", "pydantic", "1.10.13", "2.9.2"],
+  ["click", "click", "7.1.2", "8.1.7"],
+  ["requests", "requests", "2.25.1", "2.32.3"],
+  ["sqlalchemy", "sqlalchemy", "1.4.52", "2.0.35"],
+  ["jinja2", "jinja2", "2.11.3", "3.1.4"],
+  ["attr", "attrs", "21.4.0", "24.2.0"],
+  ["httpx", "httpx", "0.23.3", "0.27.2"],
+  ["werkzeug", "werkzeug", "2.0.3", "3.0.4"],
+  ["markdown", "markdown", "3.3.7", "3.7"],
+  ["yaml", "pyyaml", "6.0.1", "6.0.2"]
+ ],
+ "repos": [
+  {"name": "fastapi", "url": "https://github.com/fastapi/fastapi", "sha": "50113da16fec53b66b80d75e80a89296de4fa5a5"},
+  {"name": "typer", "url": "https://github.com/fastapi/typer", "sha": "a80f6e5ecd74f32b983cca336a2f3cba98d9853a"},
+  {"name": "sqlmodel", "url": "https://github.com/fastapi/sqlmodel", "sha": "7fec3bcbdbca5b29b21ac4777e3fb341d8a7e4e1"},
+  {"name": "httpie", "url": "https://github.com/httpie/cli", "sha": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345"},
+  {"name": "datasette", "url": "https://github.com/simonw/datasette", "sha": "b338c6f5f6b39dd3e0a341431f071d8cecb0d12b"},
+  {"name": "pip-tools", "url": "https://github.com/jazzband/pip-tools", "sha": "c58d5d945c0f20e9713e10f5fea2491a5c984f39"},
+  {"name": "black", "url": "https://github.com/psf/black", "sha": "20622e1259c29bda81831962ace1348ba1921c84"},
+  {"name": "cookiecutter", "url": "https://github.com/cookiecutter/cookiecutter", "sha": "c88fbe921c97c58b65f1883ba90a0ab53cc91b34"},
+  {"name": "mkdocs", "url": "https://github.com/mkdocs/mkdocs", "sha": "2862536793b3c67d9d83c33e0dd6d50a791928f8"},
+  {"name": "flask", "url": "https://github.com/pallets/flask", "sha": "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"},
+  {"name": "pre-commit", "url": "https://github.com/pre-commit/pre-commit", "sha": "a9bba55a3f74068b53f4bd4d831d7e05e34eae6c"},
+  {"name": "tox", "url": "https://github.com/tox-dev/tox", "sha": "2a060366248bfbb5044a6acbb93f4e41c5cca04e"},
+  {"name": "apprise", "url": "https://github.com/caronc/apprise", "sha": "bb6cc9c163771dd8a7356d6e3e0e32eea2e1cc6b"},
+  {"name": "instructor", "url": "https://github.com/567-labs/instructor", "sha": "e12f8b49203b0c1f253d27c1e709d0a09b9fc5a8"},
+  {"name": "pydantic-settings", "url": "https://github.com/pydantic/pydantic-settings", "sha": "cd2084b7de6455d3f5cbf8b7d8426ebe8a2b04ba"},
+  {"name": "starlette", "url": "https://github.com/Kludex/starlette", "sha": "03f12b7fcf0a3e21a8da648ca0900c79472e9efe"},
+  {"name": "click", "url": "https://github.com/pallets/click", "sha": "6aabf099bfdd4c1e75fe8d0e0d4241372b988ab1"},
+  {"name": "ansible-lint", "url": "https://github.com/ansible/ansible-lint", "sha": "bfb42e7b5e2b21a44ed2a57b7a3105b1737cb09a"},
+  {"name": "scrapy", "url": "https://github.com/scrapy/scrapy", "sha": "a527168ad0888a54b665a6d00a45c720a956e1c0"},
+  {"name": "requests-html", "url": "https://github.com/psf/requests-html", "sha": "075ac162dc62fc532037df0d98954ab840a97516"}
+ ]
+}
