@@ -151,3 +151,11 @@ def test_an_import_breaks_only_when_the_name_is_gone():
     """Import lines showed up as REVIEW for a parameter change they cannot feel."""
     assert severity_of(change("OBJECT_REMOVED"), RefKind.IMPORT) is Severity.BREAK
     assert severity_of(change("PARAMETER_REMOVED"), RefKind.IMPORT) is Severity.NONE
+
+
+def test_a_break_through_a_receiver_bound_only_elsewhere_is_review():
+    unscoped = Site(
+        file="app.py", line=1, symbol="thing", kind=RefKind.CALL, text="x", unscoped=True
+    )
+    (impact,) = impact_report([unscoped], [change("OBJECT_REMOVED")])
+    assert impact.severity is Severity.REVIEW

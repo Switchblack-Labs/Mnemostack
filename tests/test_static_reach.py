@@ -509,3 +509,110 @@ def test_every_line_of_an_import_is_an_import(tree):
     repo = tree({"app.py": "from requests import (\n    Session,\n    get,\n)\nget('u')\n"})
     kinds = {s.line: s.kind for s in find_sites(repo, "requests", {"get"})}
     assert kinds == {3: RefKind.IMPORT, 5: RefKind.CALL}
+
+
+# --- receivers count only in the scope that binds them ----------------------
+
+
+def test_a_parameter_in_one_function_is_only_a_guess_in_another(tree):
+    """onegov-cloud: a requests session's `.get` was reported as SQLAlchemy's BREAK.
+
+    Dropping it outright would also drop click's `ctx.invoke(...)`, whose `ctx`
+    comes from a decorator and really is a Context. So it is kept, marked.
+    """
+    repo = tree(
+        {
+            "app.py": (
+                "from sqlalchemy.orm import Session\n"
+                "import requests\n"
+                "\n"
+                "\n"
+                "def load(session: Session):\n"
+                "    return session.get(1)\n"
+                "\n"
+                "\n"
+                "def fetch(url):\n"
+                "    session = requests.Session()\n"
+                "    return session.get(url)\n"
+            )
+        }
+    )
+    sites = find_sites(repo, "sqlalchemy", {"orm.session.Session.get"})
+    assert {s.line: s.unscoped for s in sites} == {6: False, 11: True}
+
+
+def test_self_counts_only_inside_the_subclass(tree):
+    """onegov-cloud: a payment model's `self.transaction` was a removed Session attribute."""
+    repo = tree(
+        {
+            "app.py": (
+                "from sqlalchemy.orm import Session\n"
+                "\n"
+                "\n"
+                "class MySession(Session):\n"
+                "    def go(self):\n"
+                "        return self.transaction\n"
+                "\n"
+                "\n"
+                "class Payment:\n"
+                "    def refund(self):\n"
+                "        return self.transaction\n"
+            )
+        }
+    )
+    lines = {s.line for s in find_sites(repo, "sqlalchemy", {"orm.session.Session.transaction"})}
+    assert lines == {6}
+
+
+def test_module_level_receivers_and_wrapped_annotations_still_count(tree):
+    repo = tree(
+        {
+            "app.py": (
+                "from typing import Optional\n"
+                "\n"
+                "from sqlalchemy.orm import Session\n"
+                "\n"
+                "shared = Session()\n"
+                "\n"
+                "\n"
+                "def a():\n"
+                "    return shared.get(1)\n"
+                "\n"
+                "\n"
+                "def b(s: Optional[Session]):\n"
+                "    return s.get(2)\n"
+                "\n"
+                "\n"
+                "def c():\n"
+                "    with Session() as db:\n"
+                "        return db.get(3)\n"
+            )
+        }
+    )
+    lines = {s.line for s in find_sites(repo, "sqlalchemy", {"orm.session.Session.get"})}
+    assert lines == {9, 13, 18}
+
+
+def test_a_container_of_the_class_is_not_the_class(tree):
+    """onegov-cloud: `_DATAMANAGERS: WeakKeyDictionary[Session, ...]`'s `.get` was a BREAK."""
+    repo = tree(
+        {
+            "app.py": (
+                "from typing import Annotated, Optional\n"
+                "\n"
+                "from sqlalchemy.orm import Session\n"
+                "\n"
+                "managers: dict[Session, int] = {}\n"
+                "a: 'Optional[Session]' = None\n"
+                "b: Annotated[Session, 'meta'] = None\n"
+                "c: type[Session] = Session\n"
+                "\n"
+                "managers.get(1)\n"
+                "a.get(2)\n"
+                "b.get(3)\n"
+                "c.get(4)\n"
+            )
+        }
+    )
+    lines = {s.line for s in find_sites(repo, "sqlalchemy", {"orm.session.Session.get"})}
+    assert lines == {11, 12, 13}

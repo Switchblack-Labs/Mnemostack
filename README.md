@@ -93,10 +93,12 @@ or the check itself failed. Packages imported but not installed are skipped.
   A removal reached through an object whose type the line does not show cannot
   be checked; it is counted in the output rather than shown, and `sweep` marks
   the package `unverified`, never `safe`.
-- **It reads source lines, not types.** Receivers are matched by name across a
-  whole file, not per scope, so a variable in one function named like a
-  library object in another can produce a false finding. `getattr`, star
-  imports and anything built at runtime are not followed.
+- **It reads source, not types.** A variable counts as the library class within
+  the function that binds it: assigned from one, annotated as one (a container
+  of them does not count), or opened with `with`. The same name bound only in
+  another function, as when a decorator injects the argument, is a guess, and
+  is shown as REVIEW at most. `getattr`, star imports and anything built at
+  runtime are not followed.
 - **It sees API shape, not behaviour.** A function that keeps its signature but
   changes what it does is invisible here. Tests catch those.
 - **Its accuracy is measured on a small, pinned sample.** Across 20 widely used

@@ -55,7 +55,7 @@ Measured on this repository at the commit these files were added with, and
 recorded in [`results/`](results).
 
 **Noise.** 52 (repository, package) pairs: 2 BREAK groups, 105 REVIEW groups,
-2,630 places in total, no failures. Both BREAKs are real:
+2,631 places in total, no failures. Both BREAKs are real:
 
 - instructor calls pydantic's `parse_file_as`, which pydantic 2 removed;
 - pydantic-settings calls `PostgresDsn(...)`, which pydantic 2 turned from a

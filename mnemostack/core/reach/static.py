@@ -15,6 +15,7 @@ question, so an unrelated local `get` is never mistaken for the library's.
 from __future__ import annotations
 
 import ast
+import functools
 import io
 import re
 import tokenize
@@ -237,43 +238,129 @@ def compat_guards(tree: ast.AST) -> tuple[set[int], set[str]]:
     return lines, names
 
 
-def _receivers(owner: str, imports: dict[str, str], code: str) -> set[str]:
-    """Names in this file that can refer to class `owner` or hold an instance of it.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+_EVERYWHERE = 10**9
+
+
+def _dotted(node: ast.AST) -> str | None:
+    """`a.b.C` for a name or an attribute chain, else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+# Subscripts whose arguments are what the value is, rather than what it holds.
+_UNWRAP = {"Optional", "Union", "Annotated", "Final", "ClassVar", "type", "Type"}
+
+
+def _annotated_types(annotation: ast.AST) -> set[str]:
+    """The types a value annotated this way can be.
+
+    `User`, `"User"`, `User | None`, `Optional[User]`, `Annotated[User, ...]` and
+    `type[User]` can all be a User. `dict[User, int]` cannot: it is a dict.
+    Counting every name an annotation mentions made onegov-cloud's
+    `_DATAMANAGERS: WeakKeyDictionary[Session, ...]` a Session, so its dict
+    `.get` answered for a change to `Session.get`.
+    """
+    node = annotation
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return set()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotated_types(node.left) | _annotated_types(node.right)
+    if isinstance(node, ast.Subscript):
+        outer = _dotted(node.value)
+        if outer is None:
+            return set()
+        if outer.rsplit(".", 1)[-1] not in _UNWRAP:
+            return {outer}
+        args = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if outer.rsplit(".", 1)[-1] == "Annotated":
+            args = args[:1]
+        return set().union(*(_annotated_types(arg) for arg in args))
+    dotted = _dotted(node)
+    return {dotted} if dotted else set()
+
+
+def _scoped(tree: ast.AST):
+    """Every node, with the (first, last) lines of the scope a name bound there lives in."""
+    stack = [(tree, (1, _EVERYWHERE))]
+    while stack:
+        node, span = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            yield child, span
+            inner = span
+            if isinstance(child, _SCOPES):
+                inner = (child.lineno, child.end_lineno or child.lineno)
+            stack.append((child, inner))
+
+
+def _receivers(owner: str, imports: dict[str, str], tree: ast.AST) -> list[tuple[str, int, int]]:
+    """(name, first line, last line) for names that can refer to class `owner` or hold one.
 
     A member such as `Table.exists` is only reachable through a receiver the file
-    grounds in its own text: the name the class was imported as, a class here
-    that subclasses it, or a variable assigned from or annotated as one of those.
-    Inside a subclass, `self` and `cls` count too.
+    grounds itself: the name the class was imported as, a class here that
+    subclasses it, or a variable assigned from, annotated as, or opened with one
+    of those. Inside the body of such a subclass, `self` and `cls` count too.
 
     Accepting any `.exists` let `super().execute(...)` in a Session subclass
     answer for a removed `Executable.execute`, and a bare `exists` imported from
     elsewhere answer for `Table.exists`. Across twenty repositories we did not
     write, those were most of the removals the witness kept.
 
-    File-level text, not scope: a variable assigned in one function counts in
-    another. That over-reaches, and it is still far narrower than any name.
+    Each name counts only on the lines of the scope that binds it. Matched across
+    the whole file instead, a `session: Session` parameter in one function made
+    `session.get(url)` on a requests session in another a SQLAlchemy call, and
+    a payment model's `self.transaction` a removed Session attribute.
     """
-    names = {local for local, target in imports.items() if target.split(".")[-1] == owner}
-    names |= {f"{local}.{owner}" for local, target in imports.items() if not target}
-    if not names:
-        return set()
+    base = {local for local, target in imports.items() if target.split(".")[-1] == owner}
+    base |= {f"{local}.{owner}" for local, target in imports.items() if not target}
+    if not base:
+        return []
 
-    subclassed = False
+    found = {(name, 1, _EVERYWHERE) for name in base}
+
+    def known(name: str | None, line: int) -> bool:
+        return any(n == name and first <= line <= last for n, first, last in found)
+
+    nodes = list(_scoped(tree))
     for _ in range(3):  # a subclass of a subclass, a variable of a subclass
-        alternation = "|".join(sorted(map(re.escape, names)))
-        grown = set(names)
-        for match in re.finditer(r"\bclass\s+(\w+)\s*\(([^)]*)\)", code):
-            if re.search(rf"(?<![\w.])(?:{alternation})\b", match.group(2)):
-                grown.add(match.group(1))
-                subclassed = True
-        grown.update(re.findall(rf"\b(\w+)\s*=\s*(?:{alternation})\s*\(", code))
-        grown.update(re.findall(rf"\b(\w+)\s*:\s*(?:{alternation})\b", code))
-        if grown == names:
+        grown = set(found)
+        for node, (first, last) in nodes:
+            if isinstance(node, ast.ClassDef):
+                bases = (b.value if isinstance(b, ast.Subscript) else b for b in node.bases)
+                if any(known(_dotted(b), node.lineno) for b in bases):
+                    end = node.end_lineno or node.lineno
+                    grown |= {(node.name, first, last), ("self", node.lineno, end)}
+                    grown.add(("cls", node.lineno, end))
+            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                if known(_dotted(node.value.func), node.lineno):
+                    grown |= {(t.id, first, last) for t in node.targets if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if any(known(n, node.lineno) for n in _annotated_types(node.annotation)):
+                    grown.add((node.target.id, first, last))
+            elif isinstance(node, ast.arg) and node.annotation is not None:
+                if any(known(n, node.lineno) for n in _annotated_types(node.annotation)):
+                    grown.add((node.arg, first, last))
+            elif isinstance(node, ast.withitem) and isinstance(node.optional_vars, ast.Name):
+                call = node.context_expr
+                if isinstance(call, ast.Call) and known(_dotted(call.func), call.lineno):
+                    grown.add((node.optional_vars.id, first, last))
+        if grown == found:
             break
-        names = grown
-    if subclassed:
-        names |= {"self", "cls"}
-    return names
+        found = grown
+    return sorted(found)
+
+
+@functools.lru_cache(maxsize=4096)
+def _member_pattern(names: frozenset[str], leaf: str) -> re.Pattern[str]:
+    alternation = "|".join(sorted(map(re.escape, names)))
+    return re.compile(rf"(?<![\w.])(?:{alternation})\.{re.escape(leaf)}\b")
 
 
 def find_sites(
@@ -324,14 +411,15 @@ def find_sites(
             continue
 
         code = code_lines(source)
-        file_code = "\n".join(code)
-        receiver_cache: dict[str, set[str]] = {}
+        receiver_cache: dict[str, list[tuple[str, int, int]]] = {}
 
         # One pattern per way the source can name a symbol. A directly imported
         # name is written bare. A member of a class is written `receiver.member`
         # with a grounded receiver. Anything else is an attribute path starting
         # from a name this file imported: `requests.get`, `sa.orm.relationship`.
         wanted: dict[str, tuple[str, bool, set[str]]] = {}
+        # Members are matched per line, against the receivers in scope there.
+        member_wanted: dict[tuple[str, str], set[str]] = {}
         for symbol in reachable:
             parts = symbol.split(".")
             leaf = parts[-1]
@@ -358,13 +446,10 @@ def find_sites(
             ):
                 owner = parts[-2]
                 if owner not in receiver_cache:
-                    receiver_cache[owner] = _receivers(owner, imports, file_code)
-                names = receiver_cache[owner]
-                if not names:
-                    continue  # nothing here can hold one, so nothing here uses it
-                bare = False
-                alternation = "|".join(sorted(map(re.escape, names)))
-                pattern = rf"(?<![\w.])(?:{alternation})\.{re.escape(leaf)}\b"
+                    receiver_cache[owner] = _receivers(owner, imports, tree)
+                if receiver_cache[owner]:  # otherwise nothing here can hold one
+                    member_wanted.setdefault((owner, leaf), set()).add(symbol)
+                continue
             else:
                 bare = leaf in bound
                 if bare:
@@ -399,11 +484,26 @@ def find_sites(
                 continue  # blank, or nothing left once strings and comments go
             is_import = lineno in import_lines
             guarded = lineno in guard_lines or bool(hedged and hedged.search(line))
-            for pattern, (leaf, bare, owners) in wanted.items():
-                if is_import and not bare:
-                    continue  # a dotted module path in an import names no attribute
-                if not re.search(pattern, line):
-                    continue
+            # A dotted module path in an import names no attribute, so on import
+            # lines only bare names can match.
+            matched = [
+                (leaf, owners, False)
+                for pattern, (leaf, bare, owners) in wanted.items()
+                if (bare or not is_import) and re.search(pattern, line)
+            ]
+            if not is_import:
+                for (owner, leaf), owners in member_wanted.items():
+                    receivers = receiver_cache[owner]
+                    scoped = frozenset(n for n, first, last in receivers if first <= lineno <= last)
+                    if scoped and _member_pattern(scoped, leaf).search(line):
+                        matched.append((leaf, owners, False))
+                        continue
+                    # A name bound as the class in another scope is a guess. Not
+                    # self or cls: in another class those are that class.
+                    elsewhere = frozenset(n for n, _, _ in receivers) - scoped - {"self", "cls"}
+                    if elsewhere and _member_pattern(elsewhere, leaf).search(line):
+                        matched.append((leaf, owners, True))
+            for leaf, owners, unscoped in matched:
                 kind = RefKind.IMPORT if is_import else _kind(line, leaf)
                 for symbol in owners:
                     sites.append(
@@ -415,6 +515,7 @@ def find_sites(
                             text=stripped[:200],
                             via=via_path(package, symbol, imports, line, leaf),
                             guarded=guarded,
+                            unscoped=unscoped,
                         )
                     )
     return sites
